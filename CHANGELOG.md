@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.1 (2026-10-06)
+- Buy Me a Coffee sponsor link in Matterbridge, on GitHub and in the README
+
 ## 1.0.0 (2026-10-06)
 - Initial release
 - Log in once in the browser with eWeLink's OAuth login page (served from a small login page on the Matterbridge host); the login is saved and renewed automatically

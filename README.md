@@ -1,5 +1,7 @@
 # Matterbridge eWeLink Plugin
 
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/6sjde6vkzl)
+
 A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your eWeLink (Sonoff) devices to Matter, so you can control them from Apple Home, Google Home, Alexa, Home Assistant, SmartThings and any other Matter controller.
 
 ## Features
@@ -93,6 +95,12 @@ npm install
 npm install --no-save matterbridge   # provided by Matterbridge at runtime
 npm test
 ```
+
+## Support
+
+If this plugin is useful to you, you can support its development:
+
+<a href="https://buymeacoffee.com/6sjde6vkzl"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy me a coffee"></a>
 
 ## License
 
