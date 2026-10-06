@@ -31,7 +31,7 @@ test('unknown multi channel device falls back to the switches array', () => {
 });
 
 test('TH16 is a switch with temperature and humidity', () => {
-  const d = device(15, { switch: 'off', currentTemperature: '23.5', currentHumidity: 'unavailable' });
+  const d = device(15, { switch: 'off', currentTemperature: '23.5', currentHumidity: '41' });
   const functions = deviceFunctions(d);
   assert.deepEqual(
     functions.map((fn) => fn.kind),
@@ -39,7 +39,26 @@ test('TH16 is a switch with temperature and humidity', () => {
   );
   const state = deviceState(d, functions);
   assert.equal(state.temperature, 23.5);
-  assert.equal(state.humidity, undefined);
+  assert.equal(state.humidity, 41);
+  assert.equal(state.battery, undefined);
+});
+
+test('TH16 without a probe is only a switch', () => {
+  const d = device(15, { switch: 'on', currentTemperature: 'unavailable', currentHumidity: 'unavailable' });
+  assert.deepEqual(deviceFunctions(d), [{ kind: 'onOff', id: 'switch' }]);
+});
+
+test('TX Ultimate gangs use the real channel count', () => {
+  const switches = [0, 1, 2, 3].map((outlet) => ({ switch: 'off', outlet }));
+  assert.deepEqual([209, 210, 211, 212].map((uiid) => deviceFunctions(device(uiid, { switches })).length), [1, 2, 3, 4]);
+});
+
+test('SNZB-06P presence sensor', () => {
+  const d = device(7016, { human: 1, brState: 'brighter' });
+  const functions = deviceFunctions(d);
+  assert.deepEqual(functions, [{ kind: 'motion', id: 'motion' }]);
+  const state = deviceState(d, functions);
+  assert.equal(state.motion, true);
   assert.equal(state.battery, undefined);
 });
 

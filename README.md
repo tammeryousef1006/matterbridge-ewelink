@@ -15,11 +15,12 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 | Device | Examples | Exposed as |
 |--------|----------|------------|
 | Single channel switches and plugs | BASIC/BASICR2/RFR2, MINI/MINIR2, S26/S40, POW, M5 1C | Outlet (or light) |
-| Multi channel switches | DUALR3, 4CH Pro, T1/TX 2C/3C, M5 2C/3C | One outlet per channel |
-| Temperature/humidity switches | TH10, TH16, THR316/THR320 | Outlet + temperature + humidity sensor |
-| Zigbee temperature/humidity sensor | SNZB-02 | Temperature + humidity sensor with battery |
+| Multi channel switches | DUALR3, 4CH Pro, T1/TX 2C/3C, TX Ultimate T5 1C–4C, M5 2C/3C, NSPanel | One outlet per channel |
+| Temperature/humidity switches | TH10, TH16, THR316/THR320 | Outlet + temperature + humidity sensor (when a probe is connected) |
+| Zigbee temperature/humidity sensor | SNZB-02, SNZB-02D | Temperature + humidity sensor with battery |
 | Zigbee door/window sensor | SNZB-04 | Contact sensor with battery |
 | Zigbee motion sensor | SNZB-03 | Occupancy sensor with battery |
+| Zigbee presence sensor | SNZB-06P | Occupancy sensor |
 
 Other devices are skipped and logged with their UIID. Open an issue with the UIID and the device's params from the debug log to get one added.
 

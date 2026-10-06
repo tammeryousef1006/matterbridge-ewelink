@@ -22,13 +22,26 @@ export interface DeviceState {
   battery?: number;
 }
 
-/** Number of relays of multi-channel devices, by UIID. Their `switches` array often lists more outlets than exist. */
+/**
+ * Number of relays of multi-channel devices, by UIID. Their `switches` array often lists four outlets
+ * whatever the real number is. Unknown UIIDs fall back to the length of that array.
+ */
 const CHANNEL_COUNT: Record<number, number> = {
-  2: 2, 3: 3, 4: 4, 7: 2, 8: 3, 9: 4, 29: 2, 30: 3, 31: 4, 41: 4, 77: 1, 78: 1, 82: 2, 83: 3, 84: 4, 112: 1, 113: 2, 114: 3, 126: 2, 161: 2, 162: 3,
+  2: 2, 3: 3, 4: 4, 7: 2, 8: 3, 9: 4, 29: 2, 30: 3, 31: 4, 77: 1, 78: 1, 81: 1, 82: 2, 83: 3, 84: 4, 107: 1,
+  // DualR3, NSPanel, M5
+  126: 2, 133: 2, 161: 2, 162: 3,
+  // TX Ultimate T5-1C/2C/3C/4C
+  209: 1, 210: 2, 211: 3, 212: 4,
+  7029: 2,
 };
-const ZIGBEE_TEMP_HUMIDITY = new Set([1770]);
+// SNZB-02 and SNZB-02D
+const ZIGBEE_TEMP_HUMIDITY = new Set([1770, 1771]);
+// SNZB-04
 const ZIGBEE_CONTACT = new Set([3026]);
+// SNZB-03
 const ZIGBEE_MOTION = new Set([2026]);
+// SNZB-06P presence sensor (mains powered)
+const ZIGBEE_PRESENCE = new Set([7016]);
 /** Zigbee sensors that report a battery level. */
 export const BATTERY_UIIDS = new Set([...ZIGBEE_TEMP_HUMIDITY, ...ZIGBEE_CONTACT, ...ZIGBEE_MOTION]);
 
@@ -36,7 +49,7 @@ export const BATTERY_UIIDS = new Set([...ZIGBEE_TEMP_HUMIDITY, ...ZIGBEE_CONTACT
 export function deviceFunctions(device: EWeLinkDevice): DeviceFunction[] {
   const { uiid, params } = device;
   if (ZIGBEE_CONTACT.has(uiid)) return [{ kind: 'contact', id: 'contact' }];
-  if (ZIGBEE_MOTION.has(uiid)) return [{ kind: 'motion', id: 'motion' }];
+  if (ZIGBEE_MOTION.has(uiid) || ZIGBEE_PRESENCE.has(uiid)) return [{ kind: 'motion', id: 'motion' }];
   if (ZIGBEE_TEMP_HUMIDITY.has(uiid)) {
     return [
       { kind: 'temperature', id: 'temperature' },
@@ -52,9 +65,9 @@ export function deviceFunctions(device: EWeLinkDevice): DeviceFunction[] {
     functions.push({ kind: 'onOff', id: 'switch' });
   }
 
-  // TH10/TH16/THR3xx report their probe readings next to the relay
-  if ('currentTemperature' in params) functions.push({ kind: 'temperature', id: 'temperature' });
-  if ('currentHumidity' in params) functions.push({ kind: 'humidity', id: 'humidity' });
+  // TH10/TH16/THR3xx report their probe readings next to the relay; without a probe they say "unavailable"
+  if (scaled(params.currentTemperature, 1) !== undefined) functions.push({ kind: 'temperature', id: 'temperature' });
+  if (scaled(params.currentHumidity, 1) !== undefined) functions.push({ kind: 'humidity', id: 'humidity' });
   return functions;
 }
 
@@ -80,6 +93,7 @@ export function deviceState(device: EWeLinkDevice, functions: DeviceFunction[]):
   // SNZB-04 reports lock: 1 when the magnet is away (open)
   if (ZIGBEE_CONTACT.has(uiid) && params.lock !== undefined) state.contact = Number(params.lock) === 0;
   if (ZIGBEE_MOTION.has(uiid) && params.motion !== undefined) state.motion = Number(params.motion) === 1;
+  if (ZIGBEE_PRESENCE.has(uiid) && params.human !== undefined) state.motion = Number(params.human) === 1;
   if (BATTERY_UIIDS.has(uiid)) {
     const battery = scaled(params.battery, 1);
     if (battery !== undefined) state.battery = Math.max(0, Math.min(100, Math.round(battery)));

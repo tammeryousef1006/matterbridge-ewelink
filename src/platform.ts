@@ -159,10 +159,12 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
   }
 
   private loginUrls(): string[] {
-    const addresses = Object.values(os.networkInterfaces())
-      .flat()
-      .filter((address) => address && address.family === 'IPv4' && !address.internal)
-      .map((address) => address!.address);
+    // Skip container and VPN bridges (docker0, br-xxxx, veth...) that phones can't reach
+    const addresses = Object.entries(os.networkInterfaces())
+      .filter(([name]) => !/^(docker|br-|veth|virbr|cni|flannel|tailscale|zt|lo)/.test(name))
+      .flatMap(([, list]) => list ?? [])
+      .filter((address) => address.family === 'IPv4' && !address.internal)
+      .map((address) => address.address);
     return (addresses.length ? addresses : ['<matterbridge-ip>']).map((address) => `http://${address}:${this.loginPort}`);
   }
 

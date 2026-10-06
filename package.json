@@ -1,7 +1,7 @@
 {
   "name": "matterbridge-ewelink",
-  "version": "1.0.0",
-  "description": "Matterbridge plugin for eWeLink (Sonoff) switches, plugs and sensors",
+  "version": "1.0.0-beta.2",
+  "description": "eWeLink (Sonoff) for Matterbridge",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
