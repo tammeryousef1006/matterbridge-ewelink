@@ -13,6 +13,10 @@ import {
   powerSource,
   temperatureSensor,
 } from 'matterbridge';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
 import { AnsiLogger } from 'matterbridge/logger';
 import {
   BooleanState,
@@ -25,14 +29,15 @@ import {
 } from 'matterbridge/matter/clusters';
 
 import { BATTERY_UIIDS, DeviceFunction, DeviceState, deviceFunctions, deviceState, mergeParams, onOffParams } from './deviceMapper.js';
-import { EWeLinkApi, EWeLinkDevice, errorMessage } from './ewelinkApi.js';
+import { BUILTIN_APP_ID, BUILTIN_APP_SECRET, BUILTIN_REDIRECT_URL } from './credentials.js';
+import { EWeLinkApi, EWeLinkDevice, EWeLinkNotLoggedInError, EWeLinkTokens, errorMessage } from './ewelinkApi.js';
+import { LoginServer } from './loginServer.js';
 
 export interface EWeLinkPlatformConfig extends PlatformConfig {
-  email: string;
-  password: string;
-  countryCode: string;
+  loginPort?: number;
   appId?: string;
   appSecret?: string;
+  redirectUrl?: string;
   refreshInterval?: number;
   lightList?: string[];
   whiteList?: string[];
@@ -52,22 +57,21 @@ const DEFAULT_REFRESH_INTERVAL_S = 60;
 const MIN_REFRESH_INTERVAL_S = 15;
 const LOW_BATTERY_PERCENT = 20;
 const CRITICAL_BATTERY_PERCENT = 10;
-const SENSITIVE_KEYS = ['appSecret', 'password'];
-
-/**
- * eWeLink only accepts API calls from a registered application. Fill these in with the App ID and
- * App Secret of the plugin's application from https://dev.ewelink.cc so users only have to enter
- * their email, password and country code. Users can still override them in the config.
- */
-export const DEFAULT_APP_ID = '';
-export const DEFAULT_APP_SECRET = '';
+const DEFAULT_LOGIN_PORT = 8284;
+const SENSITIVE_KEYS = ['appSecret'];
+const TOKENS_FILE = 'tokens.json';
 
 export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
   private readonly ewelinkConfig: EWeLinkPlatformConfig;
   private readonly api: EWeLinkApi;
+  private readonly loginServer: LoginServer;
+  private readonly loginPort: number;
+  private readonly tokensFile: string;
   private readonly devices = new Map<string, EWeLinkMatterDevice>();
   private refreshTimer: NodeJS.Timeout | undefined;
   private refreshing = false;
+  private configured = false;
+  private loginHintShown = false;
 
   constructor(matterbridge: PlatformMatterbridge, log: AnsiLogger, config: PlatformConfig) {
     super(matterbridge, log, config);
@@ -81,20 +85,31 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     this.ewelinkConfig = config as EWeLinkPlatformConfig;
     this.log.debug('Received configuration:', JSON.stringify(redact(config), null, 2));
 
-    const email = this.ewelinkConfig.email?.trim();
-    const password = this.ewelinkConfig.password;
-    const countryCode = this.ewelinkConfig.countryCode?.trim();
-    if (!email || !password || !countryCode) {
-      throw new Error('Please enter your eWeLink email, password and country code in the plugin configuration.');
-    }
-    const appId = this.ewelinkConfig.appId?.trim() || DEFAULT_APP_ID;
-    const appSecret = this.ewelinkConfig.appSecret?.trim() || DEFAULT_APP_SECRET;
+    const appId = this.ewelinkConfig.appId?.trim() || process.env.EWELINK_APP_ID || BUILTIN_APP_ID;
+    const appSecret = this.ewelinkConfig.appSecret?.trim() || process.env.EWELINK_APP_SECRET || BUILTIN_APP_SECRET;
+    const redirectUrl = this.ewelinkConfig.redirectUrl?.trim() || BUILTIN_REDIRECT_URL;
     if (!appId || !appSecret) {
-      throw new Error('No eWeLink App ID/App Secret available. Create an app at https://dev.ewelink.cc and enter it under the advanced settings.');
+      throw new Error('This build has no eWeLink App ID/App Secret. Create an app at https://dev.ewelink.cc and enter it under the advanced settings.');
     }
 
-    this.api = new EWeLinkApi({ appId, appSecret, email, password, countryCode }, this.log);
-    this.log.info(`eWeLink platform initialized for ${email}.`);
+    this.tokensFile = path.join(this.matterbridge.matterbridgePluginDirectory, 'matterbridge-ewelink', TOKENS_FILE);
+    this.api = new EWeLinkApi(
+      { appId, appSecret, redirectUrl, tokens: this.loadTokens(), onTokens: (tokens) => this.saveTokens(tokens) },
+      this.log,
+    );
+
+    const port = Number(this.ewelinkConfig.loginPort ?? DEFAULT_LOGIN_PORT);
+    this.loginPort = Number.isInteger(port) && port > 0 && port < 65536 ? port : DEFAULT_LOGIN_PORT;
+    this.loginServer = new LoginServer({
+      port: this.loginPort,
+      api: this.api,
+      log: this.log,
+      onLogin: async () => {
+        this.loginHintShown = false;
+        await this.discoverDevices();
+      },
+    });
+    this.log.info(`eWeLink platform initialized (${this.api.isLoggedIn ? `logged in, region ${this.api.region}` : 'not logged in'}).`);
   }
 
   override async onStart(reason?: string): Promise<void> {
@@ -102,27 +117,80 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     await this.ready;
     await this.clearSelect();
 
+    try {
+      await this.loginServer.start();
+      this.log.info(`eWeLink login page: ${this.loginUrls().join(' or ')}`);
+    } catch (error) {
+      this.log.error(`Could not start the eWeLink login page on port ${this.loginPort}: ${errorMessage(error)}. Choose another "loginPort" in the plugin config.`);
+    }
+
+    if (this.api.isLoggedIn) await this.discoverDevices();
+    else this.showLoginHint();
+  }
+
+  /** Load the device list and register devices that are not registered yet. */
+  private async discoverDevices(): Promise<void> {
     let devices: EWeLinkDevice[];
     try {
       devices = await this.api.listDevices();
     } catch (error) {
-      this.log.error(`Could not load eWeLink devices: ${errorMessage(error)}`);
+      if (error instanceof EWeLinkNotLoggedInError) this.showLoginHint();
+      else this.log.error(`Could not load eWeLink devices: ${errorMessage(error)}`);
       return;
     }
     this.log.info(`Discovered ${devices.length} eWeLink device(s).`);
 
     for (const device of devices) {
+      if (this.devices.has(device.deviceid)) continue;
       try {
         await this.addDevice(device);
+        const added = this.devices.get(device.deviceid);
+        if (added && this.configured) await this.applyState(added);
       } catch (error) {
         this.log.error(`Failed to add eWeLink device ${device.name} (${device.deviceid}): ${errorMessage(error)}`);
       }
     }
   }
 
+  private showLoginHint(): void {
+    if (this.loginHintShown) return;
+    this.loginHintShown = true;
+    this.log.warn(`Not logged in to eWeLink. Open ${this.loginUrls().join(' or ')} in a browser on the same network to log in.`);
+  }
+
+  private loginUrls(): string[] {
+    const addresses = Object.values(os.networkInterfaces())
+      .flat()
+      .filter((address) => address && address.family === 'IPv4' && !address.internal)
+      .map((address) => address!.address);
+    return (addresses.length ? addresses : ['<matterbridge-ip>']).map((address) => `http://${address}:${this.loginPort}`);
+  }
+
+  private loadTokens(): EWeLinkTokens | undefined {
+    try {
+      return JSON.parse(fs.readFileSync(this.tokensFile, 'utf8')) as EWeLinkTokens;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private saveTokens(tokens: EWeLinkTokens | undefined): void {
+    try {
+      if (!tokens) {
+        fs.rmSync(this.tokensFile, { force: true });
+        return;
+      }
+      fs.mkdirSync(path.dirname(this.tokensFile), { recursive: true });
+      fs.writeFileSync(this.tokensFile, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+    } catch (error) {
+      this.log.error(`Could not save the eWeLink login to ${this.tokensFile}: ${errorMessage(error)}`);
+    }
+  }
+
   override async onConfigure(): Promise<void> {
     await super.onConfigure();
     this.log.info('onConfigure called');
+    this.configured = true;
 
     for (const matterDevice of this.devices.values()) await this.applyState(matterDevice);
 
@@ -138,6 +206,7 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     this.log.info(`onShutdown called with reason: ${reason ?? 'none'}`);
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = undefined;
+    await this.loginServer.stop();
     await super.onShutdown(reason);
     if (this.config.unregisterOnShutdown === true) await this.unregisterAllDevices();
   }
@@ -276,7 +345,8 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
         await this.applyState(matterDevice);
       }
     } catch (error) {
-      this.log.warn(`Failed to refresh eWeLink devices: ${errorMessage(error)}`);
+      if (error instanceof EWeLinkNotLoggedInError) this.showLoginHint();
+      else this.log.warn(`Failed to refresh eWeLink devices: ${errorMessage(error)}`);
     } finally {
       this.refreshing = false;
     }

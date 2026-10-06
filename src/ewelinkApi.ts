@@ -10,16 +10,27 @@ export interface EWeLinkLogger {
 
 export type EWeLinkRegion = 'eu' | 'us' | 'as' | 'cn';
 
+/** What the plugin has to remember between restarts to stay logged in. */
+export interface EWeLinkTokens {
+  accessToken: string;
+  refreshToken: string;
+  /** Epoch ms. */
+  accessTokenExpiresAt: number;
+  /** Epoch ms. */
+  refreshTokenExpiresAt: number;
+  region: EWeLinkRegion;
+}
+
 export interface EWeLinkApiOptions {
   appId: string;
   appSecret: string;
-  email: string;
-  password: string;
-  /** Country code of the account, e.g. +1 or +44. Also picks the first region tried on login. */
-  countryCode: string;
-  /** Starting region; defaults to one derived from the country code. The login switches to the account's real region. */
-  region?: EWeLinkRegion;
-  /** Override the API base URL (used by tests). Disables region switching. */
+  /** Must match the redirect URL registered for the app on dev.ewelink.cc. */
+  redirectUrl: string;
+  /** Tokens saved by an earlier login. */
+  tokens?: EWeLinkTokens;
+  /** Called whenever the tokens change (login, refresh, logout) so they can be saved. */
+  onTokens?: (tokens: EWeLinkTokens | undefined) => void;
+  /** Override the API base URL for every region (used by tests). */
   baseUrl?: string;
   timeoutMs?: number;
 }
@@ -44,10 +55,16 @@ interface EWeLinkResponse<T> {
   data?: T;
 }
 
-interface EWeLinkLoginData {
+interface EWeLinkOAuthTokenData {
+  accessToken?: string;
+  refreshToken?: string;
+  atExpiredTime?: number;
+  rtExpiredTime?: number;
+}
+
+interface EWeLinkRefreshData {
   at?: string;
   rt?: string;
-  region?: EWeLinkRegion;
 }
 
 interface EWeLinkThing {
@@ -68,13 +85,16 @@ interface EWeLinkThingList {
   total?: number;
 }
 
+export const OAUTH_PAGE_URL = 'https://c2ccdn.coolkit.cc/oauth/index.html';
+const REGIONS: EWeLinkRegion[] = ['eu', 'us', 'as', 'cn'];
 /** Error codes eWeLink returns when the access token is invalid or expired. */
 const TOKEN_ERROR_CODES = new Set([401, 402, 406]);
-const WRONG_REGION_ERROR = 10004;
 /** Item types of devices in the thing list (own and shared); groups are skipped. */
 const DEVICE_ITEM_TYPES = new Set([1, 2]);
-/** Access tokens last 30 days; renew them a day early. */
-const TOKEN_LIFETIME_MS = 29 * 24 * 60 * 60 * 1000;
+/** Access tokens last 30 days and refresh tokens 60; renew the access token a few days early. */
+const ACCESS_TOKEN_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+const REFRESH_TOKEN_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000;
+const RENEW_MARGIN_MS = 3 * 24 * 60 * 60 * 1000;
 
 export class EWeLinkApiError extends Error {
   constructor(
@@ -86,97 +106,128 @@ export class EWeLinkApiError extends Error {
   }
 }
 
+/** Thrown when there is no valid login; the user has to log in again in the browser. */
+export class EWeLinkNotLoggedInError extends Error {
+  constructor(message = 'Not logged in to eWeLink.') {
+    super(message);
+    this.name = 'EWeLinkNotLoggedInError';
+  }
+}
+
 export function regionBaseUrl(region: EWeLinkRegion): string {
   return region === 'cn' ? 'https://cn-apia.coolkit.cn' : `https://${region}-apia.coolkit.cc`;
 }
 
-/** Minimal client for the eWeLink (CoolKit) open platform REST API v2. */
+export function isRegion(value: unknown): value is EWeLinkRegion {
+  return REGIONS.includes(value as EWeLinkRegion);
+}
+
+/** Minimal client for the eWeLink (CoolKit) open platform REST API v2, logged in with OAuth 2.0. */
 export class EWeLinkApi {
   private readonly http: AxiosInstance;
-  private accessToken: string | null = null;
-  private refreshToken: string | null = null;
-  private tokenExpiresAt = 0;
-  private authPromise: Promise<void> | null = null;
-  private region: EWeLinkRegion;
+  private tokens: EWeLinkTokens | undefined;
+  private refreshPromise: Promise<void> | null = null;
 
   constructor(
     private readonly options: EWeLinkApiOptions,
     private readonly log: EWeLinkLogger,
   ) {
-    this.region = options.region ?? regionForCountryCode(options.countryCode);
-    this.http = axios.create({
-      baseURL: (options.baseUrl ?? regionBaseUrl(this.region)).replace(/\/+$/, ''),
-      timeout: options.timeoutMs ?? 15000,
+    this.http = axios.create({ timeout: options.timeoutMs ?? 15000 });
+    const tokens = options.tokens;
+    if (tokens?.accessToken && tokens.refreshToken && isRegion(tokens.region) && tokens.refreshTokenExpiresAt > Date.now()) {
+      this.tokens = { ...tokens };
+    }
+  }
+
+  get isLoggedIn(): boolean {
+    return this.tokens !== undefined;
+  }
+
+  get region(): EWeLinkRegion | undefined {
+    return this.tokens?.region;
+  }
+
+  /** URL of eWeLink's login page. After login eWeLink redirects to the app's redirect URL with code, region and state. */
+  loginUrl(state: string): string {
+    const seq = String(Date.now());
+    const params = new URLSearchParams({
+      clientId: this.options.appId,
+      seq,
+      authorization: this.sign(`${this.options.appId}_${seq}`),
+      redirectUrl: this.options.redirectUrl,
+      grantType: 'authorization_code',
+      state,
+      nonce: nonce(),
     });
+    return `${OAUTH_PAGE_URL}?${params.toString()}`;
   }
 
-  get isAuthenticated(): boolean {
-    return this.accessToken !== null;
+  /** Exchange the authorization code from the login redirect for tokens. The code is only valid for 30 seconds. */
+  async completeLogin(code: string, region: string): Promise<void> {
+    if (!isRegion(region)) throw new EWeLinkApiError(`Unknown eWeLink region "${region}".`);
+    const data = await this.signedPost<EWeLinkOAuthTokenData>(region, '/v2/user/oauth/token', {
+      code,
+      redirectUrl: this.options.redirectUrl,
+      grantType: 'authorization_code',
+    });
+    if (!data.accessToken || !data.refreshToken) throw new EWeLinkApiError('eWeLink did not return tokens.');
+    const now = Date.now();
+    this.setTokens({
+      accessToken: data.accessToken,
+      refreshToken: data.refreshToken,
+      accessTokenExpiresAt: data.atExpiredTime || now + ACCESS_TOKEN_LIFETIME_MS,
+      refreshTokenExpiresAt: data.rtExpiredTime || now + REFRESH_TOKEN_LIFETIME_MS,
+      region,
+    });
+    this.log.info(`Logged in to eWeLink (region ${region}).`);
   }
 
-  get currentRegion(): EWeLinkRegion {
-    return this.region;
+  logout(): void {
+    this.setTokens(undefined);
   }
 
-  /** Make sure a usable access token is available, logging in or refreshing as needed. */
-  async ensureAuthenticated(force = false): Promise<void> {
-    if (!force && this.accessToken && Date.now() < this.tokenExpiresAt) return;
-    // Share one in-flight authentication between concurrent callers
-    if (!this.authPromise) {
-      this.authPromise = this.authenticate().finally(() => {
-        this.authPromise = null;
+  /** Renew the access token when it is close to expiring (or when forced after eWeLink rejected it). */
+  async ensureFreshToken(force = false): Promise<void> {
+    const tokens = this.tokens;
+    if (!tokens) throw new EWeLinkNotLoggedInError();
+    if (!force && Date.now() < tokens.accessTokenExpiresAt - RENEW_MARGIN_MS) return;
+    // Share one in-flight refresh between concurrent callers
+    if (!this.refreshPromise) {
+      this.refreshPromise = this.refresh(tokens).finally(() => {
+        this.refreshPromise = null;
       });
     }
-    return this.authPromise;
+    return this.refreshPromise;
   }
 
-  private async authenticate(): Promise<void> {
-    if (this.refreshToken && this.accessToken) {
-      try {
-        const data = await this.post<EWeLinkLoginData>('/v2/user/refresh', { rt: this.refreshToken }, `Bearer ${this.accessToken}`);
-        this.storeTokens(data);
-        this.log.debug('Refreshed eWeLink access token.');
-        return;
-      } catch (error) {
-        this.log.warn(`Failed to refresh eWeLink access token, logging in again: ${errorMessage(error)}`);
-      }
-    }
-    await this.login();
-  }
-
-  private async login(regionRetry = true): Promise<void> {
-    const body = {
-      countryCode: normalizeCountryCode(this.options.countryCode),
-      email: this.options.email.trim(),
-      password: this.options.password,
-      lang: 'en',
-    };
-
-    // The login request is signed with the app secret instead of a token
-    const json = JSON.stringify(body);
-    const sign = crypto.createHmac('sha256', this.options.appSecret).update(json).digest('base64');
+  private async refresh(tokens: EWeLinkTokens): Promise<void> {
+    let data: EWeLinkRefreshData;
     try {
-      const data = await this.post<EWeLinkLoginData>('/v2/user/login', json, `Sign ${sign}`);
-      this.storeTokens(data);
-      this.log.info(`Successfully authenticated with eWeLink (region ${this.region}).`);
+      data = await this.signedPost<EWeLinkRefreshData>(tokens.region, '/v2/user/refresh', { rt: tokens.refreshToken });
     } catch (error) {
-      // The account lives in another region; the error tells us which one
-      const region = error instanceof RegionError ? error.region : undefined;
-      if (region && regionRetry && !this.options.baseUrl) {
-        this.log.info(`eWeLink account is in region "${region}", switching API endpoint.`);
-        this.region = region;
-        this.http.defaults.baseURL = regionBaseUrl(region);
-        return this.login(false);
+      // Only a rejected refresh token means the login is gone; network errors are retried later
+      if (error instanceof EWeLinkApiError && error.errcode !== undefined) {
+        this.log.warn(`eWeLink refused to renew the login (${errorMessage(error)}). Please log in again.`);
+        this.setTokens(undefined);
+        throw new EWeLinkNotLoggedInError('The eWeLink login has expired. Please log in again.');
       }
-      throw error instanceof RegionError ? new EWeLinkApiError(error.message, WRONG_REGION_ERROR) : error;
+      throw error;
     }
+    if (!data.at) throw new EWeLinkApiError('eWeLink did not return an access token.');
+    const now = Date.now();
+    this.setTokens({
+      ...tokens,
+      accessToken: data.at,
+      refreshToken: data.rt ?? tokens.refreshToken,
+      accessTokenExpiresAt: now + ACCESS_TOKEN_LIFETIME_MS,
+      refreshTokenExpiresAt: data.rt ? now + REFRESH_TOKEN_LIFETIME_MS : tokens.refreshTokenExpiresAt,
+    });
+    this.log.debug('Renewed the eWeLink access token.');
   }
 
-  private storeTokens(data: EWeLinkLoginData): void {
-    if (!data.at) throw new EWeLinkApiError('eWeLink did not return an access token.');
-    this.accessToken = data.at;
-    this.refreshToken = data.rt ?? this.refreshToken;
-    this.tokenExpiresAt = Date.now() + TOKEN_LIFETIME_MS;
+  private setTokens(tokens: EWeLinkTokens | undefined): void {
+    this.tokens = tokens;
+    this.options.onTokens?.(tokens ? { ...tokens } : undefined);
   }
 
   /** All devices on the account, including devices shared with it. */
@@ -207,42 +258,52 @@ export class EWeLinkApi {
   }
 
   private async authorized<T>(method: 'get' | 'post', path: string, payload: Record<string, unknown>): Promise<T> {
-    await this.ensureAuthenticated();
+    await this.ensureFreshToken();
     try {
-      return await this.send<T>(method, path, payload);
+      return await this.bearer<T>(method, path, payload);
     } catch (error) {
       if (!(error instanceof EWeLinkApiError) || error.errcode === undefined || !TOKEN_ERROR_CODES.has(error.errcode)) throw error;
-      this.log.debug(`eWeLink rejected the access token (${error.errcode}), re-authenticating.`);
-      // Keep the old token: the refresh request is authorized with it
-      await this.ensureAuthenticated(true);
-      return this.send<T>(method, path, payload);
+      this.log.debug(`eWeLink rejected the access token (${error.errcode}), renewing it.`);
+      await this.ensureFreshToken(true);
+      return this.bearer<T>(method, path, payload);
     }
   }
 
-  private send<T>(method: 'get' | 'post', path: string, payload: Record<string, unknown>): Promise<T> {
-    const auth = `Bearer ${this.accessToken}`;
-    return method === 'get' ? this.get<T>(path, payload, auth) : this.post<T>(path, JSON.stringify(payload), auth);
+  private bearer<T>(method: 'get' | 'post', path: string, payload: Record<string, unknown>): Promise<T> {
+    const tokens = this.tokens;
+    if (!tokens) throw new EWeLinkNotLoggedInError();
+    const url = this.url(tokens.region, path);
+    const headers = this.headers(`Bearer ${tokens.accessToken}`);
+    return this.request<T>(path, () =>
+      method === 'get' ? this.http.get(url, { params: payload, headers }) : this.http.post(url, JSON.stringify(payload), { headers }),
+    );
   }
 
-  private async get<T>(path: string, params: Record<string, unknown>, authorization: string): Promise<T> {
-    return this.request<T>(() => this.http.get(path, { params, headers: this.headers(authorization) }), path);
+  /** POST signed with the app secret instead of a token. */
+  private signedPost<T>(region: EWeLinkRegion, path: string, body: Record<string, unknown>): Promise<T> {
+    const json = JSON.stringify(body);
+    const headers = this.headers(`Sign ${this.sign(json)}`);
+    return this.request<T>(path, () => this.http.post(this.url(region, path), json, { headers }));
   }
 
-  private async post<T>(path: string, body: string | Record<string, unknown>, authorization: string): Promise<T> {
-    const json = typeof body === 'string' ? body : JSON.stringify(body);
-    return this.request<T>(() => this.http.post(path, json, { headers: this.headers(authorization) }), path);
+  private url(region: EWeLinkRegion, path: string): string {
+    return `${(this.options.baseUrl ?? regionBaseUrl(region)).replace(/\/+$/, '')}${path}`;
+  }
+
+  private sign(message: string): string {
+    return crypto.createHmac('sha256', this.options.appSecret).update(message).digest('base64');
   }
 
   private headers(authorization: string): Record<string, string> {
     return {
       'Content-Type': 'application/json',
       'X-CK-Appid': this.options.appId,
-      'X-CK-Nonce': crypto.randomBytes(4).toString('hex'),
+      'X-CK-Nonce': nonce(),
       Authorization: authorization,
     };
   }
 
-  private async request<T>(call: () => Promise<{ data: EWeLinkResponse<T> }>, path: string): Promise<T> {
+  private async request<T>(path: string, call: () => Promise<{ data: EWeLinkResponse<T> }>): Promise<T> {
     let response: EWeLinkResponse<T>;
     try {
       response = (await call()).data;
@@ -251,32 +312,15 @@ export class EWeLinkApi {
     }
     if (!response || typeof response !== 'object') throw new EWeLinkApiError(`Unexpected response from ${path}.`);
     if (response.error !== 0) {
-      const region = (response.data as EWeLinkLoginData | undefined)?.region;
-      if (response.error === WRONG_REGION_ERROR && region) throw new RegionError(region);
       throw new EWeLinkApiError(`eWeLink error ${response.error}${response.msg ? `: ${response.msg}` : ''}`, response.error);
     }
     return (response.data ?? {}) as T;
   }
 }
 
-class RegionError extends Error {
-  constructor(public readonly region: EWeLinkRegion) {
-    super(`eWeLink account is registered in region "${region}".`);
-  }
-}
-
-export function normalizeCountryCode(code: string): string {
-  const digits = (code || '').replace(/[^\d]/g, '');
-  return `+${digits || '1'}`;
-}
-
-/** Best first guess of the API region; a wrong guess only costs one extra login request. */
-export function regionForCountryCode(code: string): EWeLinkRegion {
-  const cc = Number(normalizeCountryCode(code).slice(1));
-  if (cc === 86) return 'cn';
-  if (cc === 1 || (cc >= 50 && cc <= 59) || (cc >= 500 && cc <= 599)) return 'us';
-  if ((cc >= 30 && cc <= 49) || (cc >= 350 && cc <= 499) || cc === 7 || cc === 20 || cc === 27 || (cc >= 210 && cc <= 299)) return 'eu';
-  return 'as';
+/** 8 character alphanumeric nonce, as eWeLink requires. */
+function nonce(): string {
+  return crypto.randomBytes(4).toString('hex');
 }
 
 export function errorMessage(error: unknown): string {

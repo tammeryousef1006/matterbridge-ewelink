@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Matterbridge eWeLink</title>
+<style>
+:root { --bg: #fff; --fg: #1c1c1e; --muted: #666; --accent: #0a6cff; }
+@media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #aaa; --accent: #4c93ff; } }
+body { font-family: system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 16px; line-height: 1.5; background: var(--bg); color: var(--fg); }
+h1 { font-size: 1.4rem; }
+a { color: var(--accent); }
+.muted { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Matterbridge eWeLink</h1>
+<div id="message">
+  <p>This page finishes the eWeLink login for the
+  <a href="https://github.com/tammeryousef1006/matterbridge-ewelink">matterbridge-ewelink</a> plugin.</p>
+  <p>To log in, open the login page of the plugin on your network (shown in the Matterbridge log, e.g. <code>http://192.168.1.50:8284</code>).</p>
+</div>
+<script>
+  // eWeLink redirects here after login with ?code=&region=&state=. The state carries the address of the
+  // plugin's login page on the local network; send the browser back there to finish the login.
+  // Nothing is stored or sent anywhere else.
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var code = params.get('code');
+    var state = params.get('state');
+    if (!code || !state) return;
+    var message = document.getElementById('message');
+    try {
+      var json = atob(state.replace(/-/g, '+').replace(/_/g, '/'));
+      var target = JSON.parse(json).r;
+      if (typeof target !== 'string' || !/^http:\/\/[A-Za-z0-9.\-:\[\]]+$/.test(target)) throw new Error('bad target');
+      message.innerHTML = '<p>Returning to Matterbridge&hellip;</p><p class="muted">If nothing happens, make sure this device is on the same network as Matterbridge.</p>';
+      window.location.replace(target + '/callback' + window.location.search);
+    } catch (e) {
+      message.innerHTML = '<p>This login link is not valid. Please start the login again from the plugin&rsquo;s login page.</p>';
+    }
+  })();
+</script>
+</body>
+</html>

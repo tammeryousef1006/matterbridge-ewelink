@@ -3,25 +3,32 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
 
-import { EWeLinkApi, EWeLinkApiError, normalizeCountryCode, regionForCountryCode } from '../dist/ewelinkApi.js';
+import { EWeLinkApi, EWeLinkApiError, EWeLinkNotLoggedInError, OAUTH_PAGE_URL } from '../dist/ewelinkApi.js';
 
 const silentLog = { info() {}, warn() {}, error() {}, debug() {} };
+const APP_ID = 'app-id';
 const APP_SECRET = 'app-secret';
+const REDIRECT = 'https://example.github.io/matterbridge-ewelink/';
+const DAY = 24 * 60 * 60 * 1000;
+
+const sign = (message) => crypto.createHmac('sha256', APP_SECRET).update(message).digest('base64');
 
 // Minimal fake of the eWeLink v2 open API
-const state = { requests: [], tokens: 0, validToken: null, rejectNextToken: false, things: [], wrongRegion: false };
+const state = {};
 
 function reset() {
-  state.requests = [];
-  state.tokens = 0;
-  state.validToken = null;
-  state.rejectNextToken = false;
-  state.wrongRegion = false;
-  state.things = [
-    { itemType: 1, itemData: { deviceid: 'a1', name: 'Plug', online: true, extra: { uiid: 1 }, params: { switch: 'on', fwVersion: '3.5.0' } } },
-    { itemType: 2, itemData: { deviceid: 'b2', name: 'Shared', online: false, extra: { uiid: 2 }, params: { switches: [] } } },
-    { itemType: 3, itemData: { id: 'group', name: 'A group' } },
-  ];
+  Object.assign(state, {
+    requests: [],
+    tokens: 0,
+    validToken: null,
+    validRefresh: null,
+    rejectNextToken: false,
+    things: [
+      { itemType: 1, itemData: { deviceid: 'a1', name: 'Plug', online: true, extra: { uiid: 1 }, params: { switch: 'on', fwVersion: '3.5.0' } } },
+      { itemType: 2, itemData: { deviceid: 'b2', name: 'Shared', online: false, extra: { uiid: 2 }, params: { switches: [] } } },
+      { itemType: 3, itemData: { id: 'group', name: 'A group' } },
+    ],
+  });
 }
 
 function send(res, body) {
@@ -29,10 +36,10 @@ function send(res, body) {
   res.end(JSON.stringify(body));
 }
 
-function newToken() {
+function issue() {
   state.tokens++;
   state.validToken = `at-${state.tokens}`;
-  return { at: state.validToken, rt: `rt-${state.tokens}`, region: 'eu' };
+  state.validRefresh = `rt-${state.tokens}`;
 }
 
 const server = http.createServer((req, res) => {
@@ -43,26 +50,27 @@ const server = http.createServer((req, res) => {
     const body = raw ? JSON.parse(raw) : {};
     state.requests.push({ method: req.method, path: url.pathname, query: url.searchParams, body, headers: req.headers });
 
-    if (req.headers['x-ck-appid'] !== 'app-id') return send(res, { error: 407, msg: 'appid invalid' });
+    if (req.headers['x-ck-appid'] !== APP_ID) return send(res, { error: 407, msg: 'appid invalid' });
+    const signed = req.headers.authorization === `Sign ${sign(raw)}`;
 
-    if (url.pathname === '/v2/user/login') {
-      const sign = crypto.createHmac('sha256', APP_SECRET).update(raw).digest('base64');
-      if (req.headers.authorization !== `Sign ${sign}`) return send(res, { error: 401, msg: 'bad sign' });
-      if (state.wrongRegion) return send(res, { error: 10004, msg: 'region does not match', data: { region: 'us' } });
-      if (body.email !== 'me@example.com' || body.password !== 'secret') return send(res, { error: 10001, msg: 'wrong account or password' });
-      return send(res, { error: 0, data: newToken() });
+    if (url.pathname === '/v2/user/oauth/token') {
+      if (!signed) return send(res, { error: 401, msg: 'bad sign' });
+      if (body.code !== 'good-code' || body.redirectUrl !== REDIRECT || body.grantType !== 'authorization_code') return send(res, { error: 400, msg: 'bad code' });
+      issue();
+      return send(res, { error: 0, data: { accessToken: state.validToken, refreshToken: state.validRefresh, atExpiredTime: Date.now() + 30 * DAY, rtExpiredTime: Date.now() + 60 * DAY } });
     }
 
     if (url.pathname === '/v2/user/refresh') {
-      if (body.rt !== `rt-${state.tokens}`) return send(res, { error: 401, msg: 'bad refresh token' });
-      return send(res, { error: 0, data: newToken() });
+      if (!signed) return send(res, { error: 401, msg: 'bad sign' });
+      if (body.rt !== state.validRefresh) return send(res, { error: 401, msg: 'refresh token invalid' });
+      issue();
+      return send(res, { error: 0, data: { at: state.validToken, rt: state.validRefresh } });
     }
 
     if (state.rejectNextToken || req.headers.authorization !== `Bearer ${state.validToken}`) {
       state.rejectNextToken = false;
       return send(res, { error: 401, msg: 'token invalid' });
     }
-
     if (url.pathname === '/v2/device/thing' && req.method === 'GET') {
       return send(res, { error: 0, data: { thingList: state.things, total: state.things.length } });
     }
@@ -80,36 +88,68 @@ after(() => server.close());
 beforeEach(reset);
 
 function createApi(overrides = {}) {
-  return new EWeLinkApi({ baseUrl, appId: 'app-id', appSecret: APP_SECRET, email: 'me@example.com', password: 'secret', countryCode: '+20', ...overrides }, silentLog);
+  const saved = [];
+  const api = new EWeLinkApi({ baseUrl, appId: APP_ID, appSecret: APP_SECRET, redirectUrl: REDIRECT, onTokens: (t) => saved.push(t), ...overrides }, silentLog);
+  return { api, saved };
 }
 
-test('logs in with a signed request', async () => {
-  const api = createApi();
-  await api.ensureAuthenticated();
-  assert.equal(api.isAuthenticated, true);
-  const login = state.requests.find((r) => r.path === '/v2/user/login');
-  assert.equal(login.body.countryCode, '+20');
-  assert.equal(login.body.email, 'me@example.com');
-  assert.match(login.headers['x-ck-nonce'], /^[0-9a-f]{8}$/);
+async function loggedIn() {
+  const result = createApi();
+  await result.api.completeLogin('good-code', 'eu');
+  return result;
+}
+
+test('builds a signed login URL', () => {
+  const { api } = createApi();
+  const url = new URL(api.loginUrl('my-state'));
+  assert.equal(`${url.origin}${url.pathname}`, OAUTH_PAGE_URL);
+  const p = url.searchParams;
+  assert.equal(p.get('clientId'), APP_ID);
+  assert.equal(p.get('redirectUrl'), REDIRECT);
+  assert.equal(p.get('grantType'), 'authorization_code');
+  assert.equal(p.get('state'), 'my-state');
+  assert.match(p.get('nonce'), /^[0-9a-f]{8}$/);
+  assert.equal(p.get('authorization'), sign(`${APP_ID}_${p.get('seq')}`));
 });
 
-test('reports bad credentials', async () => {
-  await assert.rejects(createApi({ password: 'wrong' }).ensureAuthenticated(), (error) => error instanceof EWeLinkApiError && error.errcode === 10001);
+test('is not logged in without tokens', async () => {
+  const { api } = createApi();
+  assert.equal(api.isLoggedIn, false);
+  await assert.rejects(api.listDevices(), EWeLinkNotLoggedInError);
 });
 
-test('reports a wrong region when the base URL is fixed', async () => {
-  state.wrongRegion = true;
-  await assert.rejects(createApi().ensureAuthenticated(), (error) => error instanceof EWeLinkApiError && error.errcode === 10004);
+test('exchanges the authorization code for tokens and saves them', async () => {
+  const { api, saved } = await loggedIn();
+  assert.equal(api.isLoggedIn, true);
+  assert.equal(api.region, 'eu');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].accessToken, 'at-1');
+  assert.equal(saved[0].refreshToken, 'rt-1');
+  assert.equal(saved[0].region, 'eu');
 });
 
-test('shares a single login between concurrent calls', async () => {
-  const api = createApi();
-  await Promise.all([api.listDevices(), api.setParams('a1', { switch: 'off' }), api.listDevices()]);
-  assert.equal(state.tokens, 1);
+test('rejects a bad code and an unknown region', async () => {
+  const { api } = createApi();
+  await assert.rejects(api.completeLogin('bad-code', 'eu'), (error) => error instanceof EWeLinkApiError && error.errcode === 400);
+  await assert.rejects(api.completeLogin('good-code', 'mars'), EWeLinkApiError);
+  assert.equal(api.isLoggedIn, false);
+});
+
+test('restores saved tokens', async () => {
+  const { saved } = await loggedIn();
+  const { api } = createApi({ tokens: saved[0] });
+  assert.equal(api.isLoggedIn, true);
+  assert.equal((await api.listDevices()).length, 2);
+});
+
+test('ignores saved tokens whose refresh token has expired', () => {
+  const tokens = { accessToken: 'a', refreshToken: 'r', accessTokenExpiresAt: 0, refreshTokenExpiresAt: Date.now() - 1, region: 'eu' };
+  assert.equal(createApi({ tokens }).api.isLoggedIn, false);
 });
 
 test('lists own and shared devices but not groups', async () => {
-  const devices = await createApi().listDevices();
+  const { api } = await loggedIn();
+  const devices = await api.listDevices();
   assert.deepEqual(
     devices.map((d) => [d.deviceid, d.name, d.uiid, d.online]),
     [
@@ -122,36 +162,46 @@ test('lists own and shared devices but not groups', async () => {
 });
 
 test('sends device params', async () => {
-  await createApi().setParams('a1', { switch: 'off' });
+  const { api } = await loggedIn();
+  await api.setParams('a1', { switch: 'off' });
   const request = state.requests.find((r) => r.path === '/v2/device/thing/status');
   assert.deepEqual(request.body, { type: 1, id: 'a1', params: { switch: 'off' } });
 });
 
-test('refreshes the token when it is rejected', async () => {
-  const api = createApi();
-  await api.ensureAuthenticated();
+test('renews the access token when eWeLink rejects it', async () => {
+  const { api, saved } = await loggedIn();
   state.rejectNextToken = true;
   await api.setParams('a1', { switch: 'on' });
   assert.equal(state.tokens, 2);
+  assert.equal(saved.at(-1).accessToken, 'at-2');
+  assert.equal(saved.at(-1).refreshToken, 'rt-2');
+});
+
+test('renews an access token that is about to expire, once for concurrent calls', async () => {
+  const { saved } = await loggedIn();
+  const { api } = createApi({ tokens: { ...saved[0], accessTokenExpiresAt: Date.now() + DAY } });
+  await Promise.all([api.listDevices(), api.listDevices(), api.setParams('a1', { switch: 'on' })]);
+  assert.equal(state.tokens, 2);
   assert.equal(state.requests.filter((r) => r.path === '/v2/user/refresh').length, 1);
-  assert.equal(state.requests.filter((r) => r.path === '/v2/user/login').length, 1);
+});
+
+test('logs out when the refresh token is refused', async () => {
+  const { api, saved } = await loggedIn();
+  state.validToken = 'something-else';
+  state.validRefresh = 'something-else';
+  await assert.rejects(api.listDevices(), EWeLinkNotLoggedInError);
+  assert.equal(api.isLoggedIn, false);
+  assert.equal(saved.at(-1), undefined);
 });
 
 test('surfaces device command errors', async () => {
-  await assert.rejects(createApi().setParams('offline', { switch: 'on' }), (error) => error instanceof EWeLinkApiError && error.errcode === 4002);
+  const { api } = await loggedIn();
+  await assert.rejects(api.setParams('offline', { switch: 'on' }), (error) => error instanceof EWeLinkApiError && error.errcode === 4002);
 });
 
-test('wraps network failures', async () => {
-  const api = new EWeLinkApi({ baseUrl: 'http://127.0.0.1:1', appId: 'a', appSecret: 's', email: 'e', password: 'p', countryCode: '1', timeoutMs: 2000 }, silentLog);
-  await assert.rejects(api.ensureAuthenticated(), EWeLinkApiError);
-});
-
-test('normalizes country codes and guesses the region', () => {
-  assert.equal(normalizeCountryCode('44'), '+44');
-  assert.equal(normalizeCountryCode(' +971 '), '+971');
-  assert.equal(regionForCountryCode('+1'), 'us');
-  assert.equal(regionForCountryCode('+44'), 'eu');
-  assert.equal(regionForCountryCode('+20'), 'eu');
-  assert.equal(regionForCountryCode('+86'), 'cn');
-  assert.equal(regionForCountryCode('+971'), 'as');
+test('keeps the login on network failures', async () => {
+  const tokens = { accessToken: 'a', refreshToken: 'r', accessTokenExpiresAt: 0, refreshTokenExpiresAt: Date.now() + DAY, region: 'eu' };
+  const { api } = createApi({ baseUrl: 'http://127.0.0.1:1', tokens, timeoutMs: 2000 });
+  await assert.rejects(api.listDevices(), (error) => error instanceof EWeLinkApiError && error.errcode === undefined);
+  assert.equal(api.isLoggedIn, true);
 });

@@ -20,6 +20,23 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm install --no-save matterbridge
+      # Build the plugin's eWeLink app into the package so users don't need their own
+      - name: Add the eWeLink app credentials
+        env:
+          EWELINK_APP_ID: ${{ secrets.EWELINK_APP_ID }}
+          EWELINK_APP_SECRET: ${{ secrets.EWELINK_APP_SECRET }}
+        run: |
+          test -n "$EWELINK_APP_ID" && test -n "$EWELINK_APP_SECRET" || { echo "::error::Set the EWELINK_APP_ID and EWELINK_APP_SECRET repository secrets"; exit 1; }
+          node -e '
+            const fs = require("fs");
+            const file = "src/credentials.ts";
+            let source = fs.readFileSync(file, "utf8");
+            source = source
+              .replace("BUILTIN_APP_ID = \x27\x27", "BUILTIN_APP_ID = " + JSON.stringify(process.env.EWELINK_APP_ID.trim()))
+              .replace("BUILTIN_APP_SECRET = \x27\x27", "BUILTIN_APP_SECRET = " + JSON.stringify(process.env.EWELINK_APP_SECRET.trim()));
+            if (source.includes("= \x27\x27")) throw new Error("credentials placeholders not found");
+            fs.writeFileSync(file, source);
+          '
       - run: npm test
       - run: npm publish --provenance --access public
         env:

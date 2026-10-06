@@ -4,7 +4,7 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 
 ## Features
 
-- Signs in with your eWeLink email, password and country code. The account's region (EU/US/Asia/China) is detected automatically.
+- Log in once in your browser on eWeLink's own login page. No developer account and no settings to fill in; the login is renewed automatically.
 - Discovers every device on your account, including devices shared with you.
 - Changes made in the eWeLink app, with a wall button or by eWeLink scenes are picked up by polling.
 - Offline devices show as "not responding" in your controller.
@@ -38,51 +38,50 @@ matterbridge -add matterbridge-ewelink
 
 Or install it from the Matterbridge frontend by searching for `matterbridge-ewelink`.
 
+## Logging in
+
+1. Add the plugin in Matterbridge and restart it.
+2. The Matterbridge log shows: `Not logged in to eWeLink. Open http://192.168.1.50:8284 ...` (your Matterbridge address).
+3. Open that address on a phone or computer **on the same network** and click **Log in with eWeLink**.
+4. Sign in with the email and password you use in the eWeLink app. Your password is entered on eWeLink's own page; Matterbridge never sees it.
+5. You are sent back to Matterbridge and your devices are added.
+
+The plugin renews the login in the background. You only log in again if Matterbridge was off for about two months, or after you change your eWeLink password. Open the same page and click **Log in again** to switch accounts.
+
 ## Configuration
 
-Open the plugin config in the Matterbridge frontend and enter:
+Nothing is required. Optional settings:
 
-| Option | Required | Description |
-|--------|----------|-------------|
-| `email` | Yes | The email you use to sign in to the eWeLink app |
-| `password` | Yes | Your eWeLink password |
-| `countryCode` | Yes | Phone country code of your account, e.g. `+1`, `+44`, `+20`, `+971` |
-| `refreshInterval` | No | Seconds between state refreshes (default `60`, minimum `15`, `0` disables) |
-| `lightList` | No | Switches (names or device IDs) to expose as lights instead of outlets |
-| `whiteList` | No | Only expose devices with these names or device IDs |
-| `blackList` | No | Never expose devices with these names or device IDs |
-| `appId` / `appSecret` | No | Advanced: your own eWeLink developer app from https://dev.ewelink.cc |
-| `debug` | No | Enable debug logging |
+| Option | Description |
+|--------|-------------|
+| `loginPort` | Port of the login page (default `8284`) |
+| `refreshInterval` | Seconds between state refreshes (default `60`, minimum `15`, `0` disables) |
+| `lightList` | Switches (names or device IDs) to expose as lights instead of outlets |
+| `whiteList` | Only expose devices with these names or device IDs |
+| `blackList` | Never expose devices with these names or device IDs |
+| `appId` / `appSecret` / `redirectUrl` | Advanced: use your own eWeLink developer app instead of the built-in one |
+| `debug` | Enable debug logging |
 
-Example:
+The login is stored in `~/Matterbridge/matterbridge-ewelink/tokens.json`. Delete it to log out.
 
-```json
-{
-  "name": "matterbridge-ewelink",
-  "type": "DynamicPlatform",
-  "email": "you@example.com",
-  "password": "your-password",
-  "countryCode": "+1"
-}
-```
-
-> **Note:** eWeLink allows one session per app per account. Signing in to eWeLink with the same App ID somewhere else (for example a second Matterbridge, or Home Assistant using the same app) signs this plugin out. The plugin then signs in again automatically on its next request.
+> **Note:** eWeLink allows one session per app per account. Logging in to the same eWeLink account with this plugin on a second Matterbridge logs the first one out.
 
 ## Troubleshooting
 
-- **"wrong account or password"**: check the email, password and country code. The country code must be the one chosen when the account was created.
+- **The login page doesn't open**: check that your phone/computer is on the same network as Matterbridge and that port 8284 is not blocked or used by another program (change `loginPort` if it is).
+- **"Returning to Matterbridge..." never finishes**: the browser could not reach the Matterbridge address. Open the login page again from a device on the same network.
+- **Devices don't appear after logging in**: restart Matterbridge.
 - **A device is skipped as unsupported**: enable `debug`, restart, and include the logged UIID in an issue.
 - **A command fails with "device is offline"**: the device is not connected to the eWeLink cloud. Check its Wi-Fi or Zigbee bridge.
 
-## For maintainers: the built-in eWeLink app
+## For maintainers
 
-eWeLink only accepts API calls from a registered developer app. To let users sign in with just their email, password and country code, the plugin ships with a built-in App ID and App Secret:
+The plugin uses one eWeLink developer app (OAuth 2.0, Standard Role) for everybody:
 
-1. Create an app at https://dev.ewelink.cc (choose a role that allows account login with email/password).
-2. Put its App ID and App Secret in `DEFAULT_APP_ID` and `DEFAULT_APP_SECRET` in `src/platform.ts`.
-3. Build and publish.
+- **App ID / App Secret**: stored as the `EWELINK_APP_ID` and `EWELINK_APP_SECRET` repository secrets. The publish workflow writes them into `src/credentials.ts` before building, so they are in the npm package but never in the repository.
+- **Redirect URL**: `https://tammeryousef1006.github.io/matterbridge-ewelink/`, the page in `docs/index.html` published with GitHub Pages (Settings → Pages → Deploy from a branch → `main` / `docs`). eWeLink sends the browser there after login; the page forwards it to the plugin's login page on the user's network, whose address travels in the OAuth `state`.
 
-Users can override them with the advanced `appId` / `appSecret` options.
+For local development, set `EWELINK_APP_ID` and `EWELINK_APP_SECRET` in the environment of Matterbridge.
 
 ## Development
 

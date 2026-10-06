@@ -1,8 +1,8 @@
 {
   "title": "Matterbridge eWeLink Plugin",
-  "description": "matterbridge-ewelink by Tamer Salah",
+  "description": "matterbridge-ewelink by Tamer Salah. After saving, open the login page shown in the Matterbridge log (http://<matterbridge-ip>:8284) to log in to eWeLink.",
   "type": "object",
-  "required": ["email", "password", "countryCode"],
+  "required": [],
   "properties": {
     "name": {
       "description": "Plugin name",
@@ -16,22 +16,11 @@
       "readOnly": true,
       "ui:widget": "hidden"
     },
-    "email": {
-      "title": "Email",
-      "description": "The email you use to sign in to the eWeLink app",
-      "type": "string"
-    },
-    "password": {
-      "title": "Password",
-      "description": "Your eWeLink password",
-      "type": "string",
-      "ui:widget": "password"
-    },
-    "countryCode": {
-      "title": "Country code",
-      "description": "Phone country code of your eWeLink account, e.g. +1 (USA), +44 (UK), +20 (Egypt), +971 (UAE)",
-      "type": "string",
-      "default": "+1"
+    "loginPort": {
+      "title": "Login page port",
+      "description": "Port of the plugin's eWeLink login page: open http://<matterbridge-ip>:<port> in a browser to log in",
+      "type": "number",
+      "default": 8284
     },
     "refreshInterval": {
       "title": "Refresh interval",
@@ -42,21 +31,27 @@
     "lightList": {
       "description": "Expose these switches (names or device IDs) as lights instead of outlets",
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "uniqueItems": true,
       "selectFrom": "name"
     },
     "whiteList": {
       "description": "Only expose devices with these names or device IDs (empty exposes all)",
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "uniqueItems": true,
       "selectFrom": "name"
     },
     "blackList": {
       "description": "Never expose devices with these names or device IDs",
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "uniqueItems": true,
       "selectFrom": "name"
     },
@@ -70,6 +65,11 @@
       "description": "Optional: the App Secret that goes with your own App ID",
       "type": "string",
       "ui:widget": "password"
+    },
+    "redirectUrl": {
+      "title": "Redirect URL (advanced)",
+      "description": "Only with your own App ID: the redirect URL registered for it. It must forward to the plugin like docs/index.html in the plugin repository.",
+      "type": "string"
     },
     "debug": {
       "description": "Enable debug logging for the plugin",
