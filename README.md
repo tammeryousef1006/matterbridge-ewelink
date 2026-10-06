@@ -21,7 +21,7 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 | Zigbee door/window sensor | SNZB-04 | Contact sensor with battery |
 | Zigbee motion sensor | SNZB-03 | Occupancy sensor with battery |
 | Zigbee presence sensor | SNZB-06P | Occupancy sensor |
-| Security modes | NSPanel Pro, Bridge-M/U (when they report their mode) | Home / Away / Sleep switches; turning one on arms that mode, turning it off disarms |
+| Security modes | NSPanel Pro (and Bridge-M/U if they report their mode) | Three separate switches, e.g. "NSPanel Away Mode"; turning one on arms that mode, turning it off disarms |
 | Virtual switches | eWeLink virtual switches | Outlet |
 
 Other devices are skipped and logged with their UIID. Open an issue with the UIID and the device's params from the debug log to get one added.

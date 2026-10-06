@@ -28,7 +28,7 @@ import {
   TemperatureMeasurement,
 } from 'matterbridge/matter/clusters';
 
-import { BATTERY_UIIDS, DeviceFunction, DeviceState, deviceFunctions, deviceState, mergeParams, onOffParams } from './deviceMapper.js';
+import { BATTERY_UIIDS, SECURITY_MODES, DeviceFunction, DeviceState, deviceFunctions, deviceState, mergeParams, onOffParams } from './deviceMapper.js';
 import { BUILTIN_APP_ID, BUILTIN_APP_SECRET, BUILTIN_REDIRECT_URL } from './credentials.js';
 import { EWeLinkApi, EWeLinkDevice, EWeLinkNotLoggedInError, EWeLinkTokens, errorMessage } from './ewelinkApi.js';
 import { LoginServer } from './loginServer.js';
@@ -48,7 +48,8 @@ interface EWeLinkMatterDevice {
   device: EWeLinkDevice;
   name: string;
   functions: DeviceFunction[];
-  root: MatterbridgeEndpoint;
+  /** Bridged Matter devices: one, or one per security mode for panels and bridges. */
+  roots: MatterbridgeEndpoint[];
   /** Endpoint holding each function: the root for single-function devices, a child endpoint otherwise. */
   endpoints: Map<string, MatterbridgeEndpoint>;
 }
@@ -232,12 +233,39 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     this.setSelectDevice(serial, name, undefined, 'hub');
     if (!this.validateDevice([name, serial, deviceid])) return;
 
-    const debug = this.config.debug === true;
-    const battery = BATTERY_UIIDS.has(device.uiid);
-    const single = functions.length === 1;
-    const rootTypes: DeviceTypeDefinition[] = single ? [this.deviceType(device, functions[0]), bridgedNode, powerSource] : [bridgedNode, powerSource];
+    const matterDevice: EWeLinkMatterDevice = { device, name, functions, roots: [], endpoints: new Map() };
+    const state = deviceState(device, functions);
 
-    const root = new MatterbridgeEndpoint(rootTypes as [DeviceTypeDefinition, ...DeviceTypeDefinition[]], { id: serial }, debug)
+    if (functions.every((fn) => fn.kind === 'security')) {
+      // Controllers like SmartThings don't show switches nested in one device, so each security mode
+      // becomes its own device ("NSPanel Away Mode")
+      for (const fn of functions) {
+        const label = SECURITY_MODES.find((mode) => mode.id === fn.id)?.label ?? fn.id;
+        const root = this.createRoot(device, `${serial}-${fn.id}`, `${name} ${label}`, [onOffPlugInUnit]);
+        this.addFunction(matterDevice, root, fn, state);
+        matterDevice.roots.push(root);
+      }
+    } else {
+      const single = functions.length === 1;
+      const root = this.createRoot(device, serial, name, single ? [this.deviceType(device, functions[0])] : []);
+      for (const fn of functions) {
+        const endpoint = single ? root : root.addChildDeviceType(fn.id, [this.deviceType(device, fn)], {}, this.config.debug === true);
+        this.addFunction(matterDevice, endpoint, fn, state);
+      }
+      matterDevice.roots.push(root);
+    }
+
+    for (const root of matterDevice.roots) {
+      root.addRequiredClusterServers();
+      await this.registerDevice(root);
+    }
+    this.devices.set(deviceid, matterDevice);
+    this.log.info(`Registered ${name} (${deviceid}, UIID ${device.uiid}) as ${functions.map((fn) => fn.id).join(', ')}${device.online ? '' : ' [offline]'}`);
+  }
+
+  /** A bridged Matter device with basic information, power source and identify. */
+  private createRoot(device: EWeLinkDevice, serial: string, name: string, types: DeviceTypeDefinition[]): MatterbridgeEndpoint {
+    const root = new MatterbridgeEndpoint([...types, bridgedNode, powerSource] as DeviceTypeDefinition[] as [DeviceTypeDefinition, ...DeviceTypeDefinition[]], { id: serial }, this.config.debug === true)
       .createDefaultIdentifyClusterServer()
       .createDefaultBridgedDeviceBasicInformationClusterServer(
         name,
@@ -250,30 +278,22 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
         1,
         device.fwVersion || '1.0.0',
       );
-    if (battery) {
+    if (BATTERY_UIIDS.has(device.uiid)) {
       root.createDefaultPowerSourceReplaceableBatteryClusterServer(100, PowerSource.BatChargeLevel.Ok, 3000, 'CR2032', 1);
     } else {
       root.createDefaultPowerSourceWiredClusterServer();
     }
-
-    const matterDevice: EWeLinkMatterDevice = { device, name, functions, root, endpoints: new Map() };
-    const state = deviceState(device, functions);
-    for (const fn of functions) {
-      const endpoint = single ? root : root.addChildDeviceType(fn.id, [this.deviceType(device, fn)], {}, debug);
-      this.addFunctionClusters(endpoint, fn, state);
-      if (fn.kind === 'onOff' || fn.kind === 'security') this.addOnOffHandlers(matterDevice, endpoint, fn);
-      endpoint.addRequiredClusterServers();
-      matterDevice.endpoints.set(fn.id, endpoint);
-    }
-    root.addRequiredClusterServers();
-
     root.addCommandHandler('identify', ({ request }) => {
       this.log.info(`Identify request for ${name}: ${JSON.stringify(request)}`);
     });
+    return root;
+  }
 
-    await this.registerDevice(root);
-    this.devices.set(deviceid, matterDevice);
-    this.log.info(`Registered ${name} (${deviceid}, UIID ${device.uiid}) as ${functions.map((fn) => fn.id).join(', ')}${device.online ? '' : ' [offline]'}`);
+  private addFunction(matterDevice: EWeLinkMatterDevice, endpoint: MatterbridgeEndpoint, fn: DeviceFunction, state: DeviceState): void {
+    this.addFunctionClusters(endpoint, fn, state);
+    if (fn.kind === 'onOff' || fn.kind === 'security') this.addOnOffHandlers(matterDevice, endpoint, fn);
+    endpoint.addRequiredClusterServers();
+    matterDevice.endpoints.set(fn.id, endpoint);
   }
 
   private deviceType(device: EWeLinkDevice, fn: DeviceFunction): DeviceTypeDefinition {
@@ -362,10 +382,11 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
   }
 
   private async applyState(matterDevice: EWeLinkMatterDevice): Promise<void> {
-    const { device, root, name } = matterDevice;
+    const { device, roots, name } = matterDevice;
+    const root = roots[0];
     const state = deviceState(device, matterDevice.functions);
     try {
-      await update(root, BridgedDeviceBasicInformation.Cluster.id, 'reachable', device.online);
+      for (const bridged of roots) await update(bridged, BridgedDeviceBasicInformation.Cluster.id, 'reachable', device.online);
       for (const fn of matterDevice.functions) {
         const endpoint = matterDevice.endpoints.get(fn.id)!;
         switch (fn.kind) {
