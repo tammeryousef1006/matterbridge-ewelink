@@ -1,6 +1,6 @@
 {
   "name": "matterbridge-ewelink",
-  "version": "1.0.0-beta.5",
+  "version": "1.0.0",
   "description": "eWeLink (Sonoff) for Matterbridge",
   "main": "dist/index.js",
   "type": "module",
