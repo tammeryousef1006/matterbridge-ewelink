@@ -225,6 +225,7 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     const functions = deviceFunctions(device);
     if (functions.length === 0) {
       this.log.info(`Skipping ${name} (${deviceid}): eWeLink UIID ${device.uiid} is not supported yet.`);
+      this.log.debug(`Params of ${name}: ${JSON.stringify(device.params)}`);
       return;
     }
 
@@ -260,7 +261,7 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     for (const fn of functions) {
       const endpoint = single ? root : root.addChildDeviceType(fn.id, [this.deviceType(device, fn)], {}, debug);
       this.addFunctionClusters(endpoint, fn, state);
-      if (fn.kind === 'onOff') this.addOnOffHandlers(matterDevice, endpoint, fn);
+      if (fn.kind === 'onOff' || fn.kind === 'security') this.addOnOffHandlers(matterDevice, endpoint, fn);
       endpoint.addRequiredClusterServers();
       matterDevice.endpoints.set(fn.id, endpoint);
     }
@@ -277,6 +278,8 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
 
   private deviceType(device: EWeLinkDevice, fn: DeviceFunction): DeviceTypeDefinition {
     switch (fn.kind) {
+      case 'security':
+        return onOffPlugInUnit;
       case 'onOff': {
         const lights = this.ewelinkConfig.lightList ?? [];
         return lights.includes(device.name) || lights.includes(device.deviceid) ? onOffLight : onOffPlugInUnit;
@@ -295,6 +298,7 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
   private addFunctionClusters(endpoint: MatterbridgeEndpoint, fn: DeviceFunction, state: DeviceState): void {
     switch (fn.kind) {
       case 'onOff':
+      case 'security':
         endpoint.createDefaultOnOffClusterServer(state.onOff[fn.id] ?? false);
         break;
       case 'temperature':
@@ -320,10 +324,13 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
       this.log.info(`Turning ${label} ${on ? 'on' : 'off'}...`);
       try {
         if (!matterDevice.device.online) throw new Error('the device is offline in eWeLink');
-        const params = onOffParams(fn, on);
+        const params = onOffParams(fn, on, matterDevice.device.params);
+        if (!params) return;
         await this.api.setParams(matterDevice.device.deviceid, params);
         matterDevice.device.params = mergeParams(matterDevice.device.params, params);
         this.log.info(`${label} turned ${on ? 'on' : 'off'}.`);
+        // Arming one security mode disarms the others; update their switches once this command is done
+        if (fn.kind === 'security') setImmediate(() => void this.applyState(matterDevice));
       } catch (error) {
         this.log.error(`Failed to turn ${label} ${on ? 'on' : 'off'}: ${errorMessage(error)}`);
         throw error;
@@ -363,6 +370,7 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
         const endpoint = matterDevice.endpoints.get(fn.id)!;
         switch (fn.kind) {
           case 'onOff':
+          case 'security':
             if (state.onOff[fn.id] !== undefined) await update(endpoint, OnOff.Cluster.id, 'onOff', state.onOff[fn.id]);
             break;
           case 'temperature':

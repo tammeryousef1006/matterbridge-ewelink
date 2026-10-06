@@ -89,3 +89,34 @@ test('merges channel changes into cached params', () => {
   assert.equal(merged.other, 1);
   assert.equal(params.switches[1].switch, 'off');
 });
+
+test('virtual switches are single channel', () => {
+  const switches = [0, 1, 2, 3].map((outlet) => ({ switch: outlet === 0 ? 'on' : 'off', outlet }));
+  const d = device(264, { switches });
+  const functions = deviceFunctions(d);
+  assert.deepEqual(functions, [{ kind: 'onOff', id: 'channel1', channel: 0 }]);
+  assert.deepEqual(deviceState(d, functions).onOff, { channel1: true });
+});
+
+test('NSPanel Pro security modes are three switches', () => {
+  const d = device(195, { securityType: 2, temperature: 25 });
+  const functions = deviceFunctions(d);
+  assert.deepEqual(
+    functions.map((fn) => [fn.kind, fn.id]),
+    [
+      ['security', 'home'],
+      ['security', 'away'],
+      ['security', 'sleep'],
+    ],
+  );
+  assert.deepEqual(deviceState(d, functions).onOff, { home: false, away: true, sleep: false });
+  const [home, away] = functions;
+  assert.deepEqual(onOffParams(home, true, d.params), { securityType: 1, currentType: 1 });
+  assert.deepEqual(onOffParams(away, false, d.params), { securityType: 0 });
+  // Turning off a mode that is not armed leaves the armed one alone
+  assert.equal(onOffParams(home, false, d.params), undefined);
+});
+
+test('devices without security modes are unchanged', () => {
+  assert.deepEqual(deviceFunctions(device(281, {})), []);
+});
