@@ -20,7 +20,7 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 | Zigbee temperature/humidity sensor | SNZB-02, SNZB-02D | Temperature + humidity sensor with battery |
 | Zigbee door/window sensor | SNZB-04 | Contact sensor with battery |
 | Zigbee motion sensor | SNZB-03 | Occupancy sensor with battery |
-| Zigbee presence sensor | SNZB-06P | Occupancy sensor |
+| Zigbee presence sensor | SNZB-06P | Occupancy sensor, plus a separate light sensor ("SNZB 06P Light": ~300 lux when bright, ~5 lux when dark) |
 | Security modes | NSPanel Pro (and Bridge-M/U if they report their mode) | Three separate switches, e.g. "NSPanel Away Mode"; turning one on arms that mode, turning it off disarms |
 | Virtual switches | eWeLink virtual switches | Outlet |
 

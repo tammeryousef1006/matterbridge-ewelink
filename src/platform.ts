@@ -7,6 +7,7 @@ import {
   bridgedNode,
   contactSensor,
   humiditySensor,
+  lightSensor,
   occupancySensor,
   onOffLight,
   onOffPlugInUnit,
@@ -21,6 +22,7 @@ import { AnsiLogger } from 'matterbridge/logger';
 import {
   BooleanState,
   BridgedDeviceBasicInformation,
+  IlluminanceMeasurement,
   OccupancySensing,
   OnOff,
   PowerSource,
@@ -28,7 +30,7 @@ import {
   TemperatureMeasurement,
 } from 'matterbridge/matter/clusters';
 
-import { BATTERY_UIIDS, SECURITY_MODES, DeviceFunction, DeviceState, deviceFunctions, deviceState, mergeParams, onOffParams } from './deviceMapper.js';
+import { BATTERY_UIIDS, BRIGHT_LUX, DARK_LUX, SECURITY_MODES, DeviceFunction, illuminanceValue, DeviceState, deviceFunctions, deviceState, mergeParams, onOffParams } from './deviceMapper.js';
 import { BUILTIN_APP_ID, BUILTIN_APP_SECRET, BUILTIN_REDIRECT_URL } from './credentials.js';
 import { EWeLinkApi, EWeLinkDevice, EWeLinkNotLoggedInError, EWeLinkTokens, errorMessage } from './ewelinkApi.js';
 import { LoginServer } from './loginServer.js';
@@ -236,15 +238,17 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     const matterDevice: EWeLinkMatterDevice = { device, name, functions, roots: [], endpoints: new Map() };
     const state = deviceState(device, functions);
 
-    if (functions.every((fn) => fn.kind === 'security')) {
-      // Controllers like SmartThings don't show switches nested in one device, so each security mode
-      // becomes its own device ("NSPanel Away Mode")
-      for (const fn of functions) {
-        const label = SECURITY_MODES.find((mode) => mode.id === fn.id)?.label ?? fn.id;
-        const root = this.createRoot(device, `${serial}-${fn.id}`, `${name} ${label}`, [onOffPlugInUnit]);
+    if (functions.every((fn) => fn.kind === 'security') || functions.some((fn) => fn.kind === 'light')) {
+      // Controllers like SmartThings don't show functions nested in one device, so these become separate
+      // devices ("NSPanel Away Mode", "SNZB 06P Light"). A first non-security function keeps the device's
+      // own identity so it stays the same device in controllers.
+      functions.forEach((fn, index) => {
+        const own = fn.kind === 'security' || index > 0;
+        const label = SECURITY_MODES.find((mode) => mode.id === fn.id)?.label ?? (fn.kind === 'light' ? 'Light' : fn.id);
+        const root = this.createRoot(device, own ? `${serial}-${fn.id}` : serial, own ? `${name} ${label}` : name, [this.deviceType(device, fn)]);
         this.addFunction(matterDevice, root, fn, state);
         matterDevice.roots.push(root);
-      }
+      });
     } else {
       const single = functions.length === 1;
       const root = this.createRoot(device, serial, name, single ? [this.deviceType(device, functions[0])] : []);
@@ -312,6 +316,8 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
         return contactSensor;
       case 'motion':
         return occupancySensor;
+      case 'light':
+        return lightSensor;
     }
   }
 
@@ -332,6 +338,9 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
         break;
       case 'motion':
         endpoint.createDefaultOccupancySensingClusterServer(state.motion ?? false);
+        break;
+      case 'light':
+        endpoint.createDefaultIlluminanceMeasurementClusterServer(state.bright === undefined ? null : illuminanceValue(state.bright ? BRIGHT_LUX : DARK_LUX));
         break;
     }
   }
@@ -408,6 +417,9 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
               const current = endpoint.getAttribute(OccupancySensing.Cluster.id, 'occupancy') as { occupied?: boolean } | undefined;
               if (current?.occupied !== state.motion) await endpoint.setAttribute(OccupancySensing.Cluster.id, 'occupancy', { occupied: state.motion }, endpoint.log);
             }
+            break;
+          case 'light':
+            if (state.bright !== undefined) await update(endpoint, IlluminanceMeasurement.Cluster.id, 'measuredValue', illuminanceValue(state.bright ? BRIGHT_LUX : DARK_LUX));
             break;
         }
       }

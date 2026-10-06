@@ -8,7 +8,9 @@ export type DeviceFunction =
   | { kind: 'temperature'; id: string }
   | { kind: 'humidity'; id: string }
   | { kind: 'contact'; id: string }
-  | { kind: 'motion'; id: string };
+  | { kind: 'motion'; id: string }
+  /** Bright/dark only (SNZB-06P), reported as a fixed illuminance. */
+  | { kind: 'light'; id: string };
 
 export interface DeviceState {
   /** On/off per function id (switches and security modes). */
@@ -20,6 +22,8 @@ export interface DeviceState {
   /** true when the door/window is closed. */
   contact?: boolean;
   motion?: boolean;
+  /** true when bright, false when dark. */
+  bright?: boolean;
   /** Percent, for battery powered (Zigbee) sensors. */
   battery?: number;
 }
@@ -59,7 +63,12 @@ export const BATTERY_UIIDS = new Set([...ZIGBEE_TEMP_HUMIDITY, ...ZIGBEE_CONTACT
 export function deviceFunctions(device: EWeLinkDevice): DeviceFunction[] {
   const { uiid, params } = device;
   if (ZIGBEE_CONTACT.has(uiid)) return [{ kind: 'contact', id: 'contact' }];
-  if (ZIGBEE_MOTION.has(uiid) || ZIGBEE_PRESENCE.has(uiid)) return [{ kind: 'motion', id: 'motion' }];
+  if (ZIGBEE_MOTION.has(uiid)) return [{ kind: 'motion', id: 'motion' }];
+  if (ZIGBEE_PRESENCE.has(uiid)) {
+    const functions: DeviceFunction[] = [{ kind: 'motion', id: 'motion' }];
+    if (typeof params.brState === 'string') functions.push({ kind: 'light', id: 'light' });
+    return functions;
+  }
   if (ZIGBEE_TEMP_HUMIDITY.has(uiid)) {
     return [
       { kind: 'temperature', id: 'temperature' },
@@ -111,6 +120,7 @@ export function deviceState(device: EWeLinkDevice, functions: DeviceFunction[]):
   if (ZIGBEE_CONTACT.has(uiid) && params.lock !== undefined) state.contact = Number(params.lock) === 0;
   if (ZIGBEE_MOTION.has(uiid) && params.motion !== undefined) state.motion = Number(params.motion) === 1;
   if (ZIGBEE_PRESENCE.has(uiid) && params.human !== undefined) state.motion = Number(params.human) === 1;
+  if (ZIGBEE_PRESENCE.has(uiid) && (params.brState === 'brighter' || params.brState === 'darker')) state.bright = params.brState === 'brighter';
   if (BATTERY_UIIDS.has(uiid)) {
     const battery = scaled(params.battery, 1);
     if (battery !== undefined) state.battery = Math.max(0, Math.min(100, Math.round(battery)));
@@ -157,4 +167,13 @@ function scaled(value: unknown, divisor: number): number | undefined {
   if (value === undefined || value === null || value === '' || value === 'unavailable') return undefined;
   const number = Number(value);
   return Number.isFinite(number) ? number / divisor : undefined;
+}
+
+/** Lux reported for a bright/dark-only light sensor. */
+export const BRIGHT_LUX = 300;
+export const DARK_LUX = 5;
+
+/** Matter illuminance attribute value (10000 * log10(lux) + 1) for a lux reading. */
+export function illuminanceValue(lux: number): number {
+  return Math.round(10000 * Math.log10(Math.max(lux, 1)) + 1);
 }

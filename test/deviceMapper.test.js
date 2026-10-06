@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deviceFunctions, deviceState, mergeParams, onOffParams } from '../dist/deviceMapper.js';
+import { deviceFunctions, deviceState, illuminanceValue, mergeParams, onOffParams } from '../dist/deviceMapper.js';
 
 const device = (uiid, params) => ({ deviceid: 'id', name: 'Device', online: true, uiid, params });
 
@@ -53,13 +53,24 @@ test('TX Ultimate gangs use the real channel count', () => {
   assert.deepEqual([209, 210, 211, 212].map((uiid) => deviceFunctions(device(uiid, { switches })).length), [1, 2, 3, 4]);
 });
 
-test('SNZB-06P presence sensor', () => {
+test('SNZB-06P presence sensor with bright/dark light sensor', () => {
   const d = device(7016, { human: 1, brState: 'brighter' });
   const functions = deviceFunctions(d);
-  assert.deepEqual(functions, [{ kind: 'motion', id: 'motion' }]);
+  assert.deepEqual(functions, [
+    { kind: 'motion', id: 'motion' },
+    { kind: 'light', id: 'light' },
+  ]);
   const state = deviceState(d, functions);
   assert.equal(state.motion, true);
+  assert.equal(state.bright, true);
   assert.equal(state.battery, undefined);
+  assert.equal(deviceState(device(7016, { human: 0, brState: 'darker' }), functions).bright, false);
+});
+
+test('illuminance values follow the Matter log scale', () => {
+  assert.equal(illuminanceValue(1), 1);
+  assert.equal(illuminanceValue(300), 24772);
+  assert.equal(illuminanceValue(5), 6991);
 });
 
 test('Zigbee temperature/humidity sensor', () => {
