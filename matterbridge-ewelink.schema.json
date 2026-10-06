@@ -1,0 +1,86 @@
+{
+  "title": "Matterbridge eWeLink Plugin",
+  "description": "matterbridge-ewelink by Tamer Salah",
+  "type": "object",
+  "required": ["email", "password", "countryCode"],
+  "properties": {
+    "name": {
+      "description": "Plugin name",
+      "type": "string",
+      "readOnly": true,
+      "ui:widget": "hidden"
+    },
+    "type": {
+      "description": "Plugin type",
+      "type": "string",
+      "readOnly": true,
+      "ui:widget": "hidden"
+    },
+    "email": {
+      "title": "Email",
+      "description": "The email you use to sign in to the eWeLink app",
+      "type": "string"
+    },
+    "password": {
+      "title": "Password",
+      "description": "Your eWeLink password",
+      "type": "string",
+      "ui:widget": "password"
+    },
+    "countryCode": {
+      "title": "Country code",
+      "description": "Phone country code of your eWeLink account, e.g. +1 (USA), +44 (UK), +20 (Egypt), +971 (UAE)",
+      "type": "string",
+      "default": "+1"
+    },
+    "refreshInterval": {
+      "title": "Refresh interval",
+      "description": "How often (in seconds) to refresh device state. Minimum 15, 0 disables polling.",
+      "type": "number",
+      "default": 60
+    },
+    "lightList": {
+      "description": "Expose these switches (names or device IDs) as lights instead of outlets",
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "selectFrom": "name"
+    },
+    "whiteList": {
+      "description": "Only expose devices with these names or device IDs (empty exposes all)",
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "selectFrom": "name"
+    },
+    "blackList": {
+      "description": "Never expose devices with these names or device IDs",
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "selectFrom": "name"
+    },
+    "appId": {
+      "title": "App ID (advanced)",
+      "description": "Optional: your own eWeLink developer App ID from https://dev.ewelink.cc. Leave empty to use the plugin's built-in app.",
+      "type": "string"
+    },
+    "appSecret": {
+      "title": "App Secret (advanced)",
+      "description": "Optional: the App Secret that goes with your own App ID",
+      "type": "string",
+      "ui:widget": "password"
+    },
+    "debug": {
+      "description": "Enable debug logging for the plugin",
+      "type": "boolean",
+      "default": false
+    },
+    "unregisterOnShutdown": {
+      "description": "Unregister all devices on shutdown (development only)",
+      "type": "boolean",
+      "default": false,
+      "ui:widget": "hidden"
+    }
+  }
+}

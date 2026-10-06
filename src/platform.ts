@@ -1,0 +1,341 @@
+import {
+  DeviceTypeDefinition,
+  MatterbridgeDynamicPlatform,
+  MatterbridgeEndpoint,
+  PlatformConfig,
+  PlatformMatterbridge,
+  bridgedNode,
+  contactSensor,
+  humiditySensor,
+  occupancySensor,
+  onOffLight,
+  onOffPlugInUnit,
+  powerSource,
+  temperatureSensor,
+} from 'matterbridge';
+import { AnsiLogger } from 'matterbridge/logger';
+import {
+  BooleanState,
+  BridgedDeviceBasicInformation,
+  OccupancySensing,
+  OnOff,
+  PowerSource,
+  RelativeHumidityMeasurement,
+  TemperatureMeasurement,
+} from 'matterbridge/matter/clusters';
+
+import { BATTERY_UIIDS, DeviceFunction, DeviceState, deviceFunctions, deviceState, mergeParams, onOffParams } from './deviceMapper.js';
+import { EWeLinkApi, EWeLinkDevice, errorMessage } from './ewelinkApi.js';
+
+export interface EWeLinkPlatformConfig extends PlatformConfig {
+  email: string;
+  password: string;
+  countryCode: string;
+  appId?: string;
+  appSecret?: string;
+  refreshInterval?: number;
+  lightList?: string[];
+  whiteList?: string[];
+  blackList?: string[];
+}
+
+interface EWeLinkMatterDevice {
+  device: EWeLinkDevice;
+  name: string;
+  functions: DeviceFunction[];
+  root: MatterbridgeEndpoint;
+  /** Endpoint holding each function: the root for single-function devices, a child endpoint otherwise. */
+  endpoints: Map<string, MatterbridgeEndpoint>;
+}
+
+const DEFAULT_REFRESH_INTERVAL_S = 60;
+const MIN_REFRESH_INTERVAL_S = 15;
+const LOW_BATTERY_PERCENT = 20;
+const CRITICAL_BATTERY_PERCENT = 10;
+const SENSITIVE_KEYS = ['appSecret', 'password'];
+
+/**
+ * eWeLink only accepts API calls from a registered application. Fill these in with the App ID and
+ * App Secret of the plugin's application from https://dev.ewelink.cc so users only have to enter
+ * their email, password and country code. Users can still override them in the config.
+ */
+export const DEFAULT_APP_ID = '';
+export const DEFAULT_APP_SECRET = '';
+
+export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
+  private readonly ewelinkConfig: EWeLinkPlatformConfig;
+  private readonly api: EWeLinkApi;
+  private readonly devices = new Map<string, EWeLinkMatterDevice>();
+  private refreshTimer: NodeJS.Timeout | undefined;
+  private refreshing = false;
+
+  constructor(matterbridge: PlatformMatterbridge, log: AnsiLogger, config: PlatformConfig) {
+    super(matterbridge, log, config);
+
+    if (typeof this.verifyMatterbridgeVersion === 'function' && !this.verifyMatterbridgeVersion('3.0.0')) {
+      throw new Error(
+        `This plugin requires Matterbridge version >= "3.0.0". Please update Matterbridge from ${this.matterbridge.matterbridgeVersion} to the latest version in the frontend.`,
+      );
+    }
+
+    this.ewelinkConfig = config as EWeLinkPlatformConfig;
+    this.log.debug('Received configuration:', JSON.stringify(redact(config), null, 2));
+
+    const email = this.ewelinkConfig.email?.trim();
+    const password = this.ewelinkConfig.password;
+    const countryCode = this.ewelinkConfig.countryCode?.trim();
+    if (!email || !password || !countryCode) {
+      throw new Error('Please enter your eWeLink email, password and country code in the plugin configuration.');
+    }
+    const appId = this.ewelinkConfig.appId?.trim() || DEFAULT_APP_ID;
+    const appSecret = this.ewelinkConfig.appSecret?.trim() || DEFAULT_APP_SECRET;
+    if (!appId || !appSecret) {
+      throw new Error('No eWeLink App ID/App Secret available. Create an app at https://dev.ewelink.cc and enter it under the advanced settings.');
+    }
+
+    this.api = new EWeLinkApi({ appId, appSecret, email, password, countryCode }, this.log);
+    this.log.info(`eWeLink platform initialized for ${email}.`);
+  }
+
+  override async onStart(reason?: string): Promise<void> {
+    this.log.info(`onStart called with reason: ${reason ?? 'none'}`);
+    await this.ready;
+    await this.clearSelect();
+
+    let devices: EWeLinkDevice[];
+    try {
+      devices = await this.api.listDevices();
+    } catch (error) {
+      this.log.error(`Could not load eWeLink devices: ${errorMessage(error)}`);
+      return;
+    }
+    this.log.info(`Discovered ${devices.length} eWeLink device(s).`);
+
+    for (const device of devices) {
+      try {
+        await this.addDevice(device);
+      } catch (error) {
+        this.log.error(`Failed to add eWeLink device ${device.name} (${device.deviceid}): ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  override async onConfigure(): Promise<void> {
+    await super.onConfigure();
+    this.log.info('onConfigure called');
+
+    for (const matterDevice of this.devices.values()) await this.applyState(matterDevice);
+
+    const interval = this.refreshIntervalSeconds();
+    if (interval > 0) {
+      this.log.info(`Refreshing device state every ${interval} seconds.`);
+      this.refreshTimer = setInterval(() => void this.refreshStates(), interval * 1000);
+      this.refreshTimer.unref?.();
+    }
+  }
+
+  override async onShutdown(reason?: string): Promise<void> {
+    this.log.info(`onShutdown called with reason: ${reason ?? 'none'}`);
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.refreshTimer = undefined;
+    await super.onShutdown(reason);
+    if (this.config.unregisterOnShutdown === true) await this.unregisterAllDevices();
+  }
+
+  private refreshIntervalSeconds(): number {
+    const value = Number(this.ewelinkConfig.refreshInterval ?? DEFAULT_REFRESH_INTERVAL_S);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.max(MIN_REFRESH_INTERVAL_S, Math.round(value));
+  }
+
+  private async addDevice(device: EWeLinkDevice): Promise<void> {
+    const { name, deviceid } = device;
+    const serial = `ewelink-${deviceid}`;
+    const functions = deviceFunctions(device);
+    if (functions.length === 0) {
+      this.log.info(`Skipping ${name} (${deviceid}): eWeLink UIID ${device.uiid} is not supported yet.`);
+      return;
+    }
+
+    this.setSelectDevice(serial, name, undefined, 'hub');
+    if (!this.validateDevice([name, serial, deviceid])) return;
+
+    const debug = this.config.debug === true;
+    const battery = BATTERY_UIIDS.has(device.uiid);
+    const single = functions.length === 1;
+    const rootTypes: DeviceTypeDefinition[] = single ? [this.deviceType(device, functions[0]), bridgedNode, powerSource] : [bridgedNode, powerSource];
+
+    const root = new MatterbridgeEndpoint(rootTypes as [DeviceTypeDefinition, ...DeviceTypeDefinition[]], { id: serial }, debug)
+      .createDefaultIdentifyClusterServer()
+      .createDefaultBridgedDeviceBasicInformationClusterServer(
+        name,
+        serial,
+        0xfff1,
+        device.brandName || 'eWeLink',
+        device.productModel || `eWeLink UIID ${device.uiid}`,
+        parseInt(this.version.replace(/\D/g, '')) || 1,
+        this.version,
+        1,
+        device.fwVersion || '1.0.0',
+      );
+    if (battery) {
+      root.createDefaultPowerSourceReplaceableBatteryClusterServer(100, PowerSource.BatChargeLevel.Ok, 3000, 'CR2032', 1);
+    } else {
+      root.createDefaultPowerSourceWiredClusterServer();
+    }
+
+    const matterDevice: EWeLinkMatterDevice = { device, name, functions, root, endpoints: new Map() };
+    const state = deviceState(device, functions);
+    for (const fn of functions) {
+      const endpoint = single ? root : root.addChildDeviceType(fn.id, [this.deviceType(device, fn)], {}, debug);
+      this.addFunctionClusters(endpoint, fn, state);
+      if (fn.kind === 'onOff') this.addOnOffHandlers(matterDevice, endpoint, fn);
+      endpoint.addRequiredClusterServers();
+      matterDevice.endpoints.set(fn.id, endpoint);
+    }
+    root.addRequiredClusterServers();
+
+    root.addCommandHandler('identify', ({ request }) => {
+      this.log.info(`Identify request for ${name}: ${JSON.stringify(request)}`);
+    });
+
+    await this.registerDevice(root);
+    this.devices.set(deviceid, matterDevice);
+    this.log.info(`Registered ${name} (${deviceid}, UIID ${device.uiid}) as ${functions.map((fn) => fn.id).join(', ')}${device.online ? '' : ' [offline]'}`);
+  }
+
+  private deviceType(device: EWeLinkDevice, fn: DeviceFunction): DeviceTypeDefinition {
+    switch (fn.kind) {
+      case 'onOff': {
+        const lights = this.ewelinkConfig.lightList ?? [];
+        return lights.includes(device.name) || lights.includes(device.deviceid) ? onOffLight : onOffPlugInUnit;
+      }
+      case 'temperature':
+        return temperatureSensor;
+      case 'humidity':
+        return humiditySensor;
+      case 'contact':
+        return contactSensor;
+      case 'motion':
+        return occupancySensor;
+    }
+  }
+
+  private addFunctionClusters(endpoint: MatterbridgeEndpoint, fn: DeviceFunction, state: DeviceState): void {
+    switch (fn.kind) {
+      case 'onOff':
+        endpoint.createDefaultOnOffClusterServer(state.onOff[fn.id] ?? false);
+        break;
+      case 'temperature':
+        endpoint.createDefaultTemperatureMeasurementClusterServer(state.temperature === undefined ? null : Math.round(state.temperature * 100));
+        break;
+      case 'humidity':
+        endpoint.createDefaultRelativeHumidityMeasurementClusterServer(state.humidity === undefined ? null : Math.round(state.humidity * 100));
+        break;
+      case 'contact':
+        endpoint.createDefaultBooleanStateClusterServer(state.contact ?? true);
+        break;
+      case 'motion':
+        endpoint.createDefaultOccupancySensingClusterServer(state.motion ?? false);
+        break;
+    }
+  }
+
+  private addOnOffHandlers(matterDevice: EWeLinkMatterDevice, endpoint: MatterbridgeEndpoint, fn: DeviceFunction): void {
+    // Throwing from a handler fails the Matter command, so controllers show the error
+    // and the on/off state is left unchanged.
+    const switchTo = async (on: boolean): Promise<void> => {
+      const label = matterDevice.functions.length > 1 ? `${matterDevice.name} ${fn.id}` : matterDevice.name;
+      this.log.info(`Turning ${label} ${on ? 'on' : 'off'}...`);
+      try {
+        if (!matterDevice.device.online) throw new Error('the device is offline in eWeLink');
+        const params = onOffParams(fn, on);
+        await this.api.setParams(matterDevice.device.deviceid, params);
+        matterDevice.device.params = mergeParams(matterDevice.device.params, params);
+        this.log.info(`${label} turned ${on ? 'on' : 'off'}.`);
+      } catch (error) {
+        this.log.error(`Failed to turn ${label} ${on ? 'on' : 'off'}: ${errorMessage(error)}`);
+        throw error;
+      }
+    };
+    endpoint.addCommandHandler('on', () => switchTo(true));
+    endpoint.addCommandHandler('off', () => switchTo(false));
+    endpoint.addCommandHandler('toggle', () => switchTo(endpoint.getAttribute(OnOff.Cluster.id, 'onOff') !== true));
+  }
+
+  /** Poll the device list and push changes (made in the eWeLink app, by hand or by automations) to Matter. */
+  private async refreshStates(): Promise<void> {
+    if (this.refreshing || this.devices.size === 0) return;
+    this.refreshing = true;
+    try {
+      const devices = await this.api.listDevices();
+      for (const device of devices) {
+        const matterDevice = this.devices.get(device.deviceid);
+        if (!matterDevice) continue;
+        matterDevice.device = device;
+        await this.applyState(matterDevice);
+      }
+    } catch (error) {
+      this.log.warn(`Failed to refresh eWeLink devices: ${errorMessage(error)}`);
+    } finally {
+      this.refreshing = false;
+    }
+  }
+
+  private async applyState(matterDevice: EWeLinkMatterDevice): Promise<void> {
+    const { device, root, name } = matterDevice;
+    const state = deviceState(device, matterDevice.functions);
+    try {
+      await update(root, BridgedDeviceBasicInformation.Cluster.id, 'reachable', device.online);
+      for (const fn of matterDevice.functions) {
+        const endpoint = matterDevice.endpoints.get(fn.id)!;
+        switch (fn.kind) {
+          case 'onOff':
+            if (state.onOff[fn.id] !== undefined) await update(endpoint, OnOff.Cluster.id, 'onOff', state.onOff[fn.id]);
+            break;
+          case 'temperature':
+            if (state.temperature !== undefined) await update(endpoint, TemperatureMeasurement.Cluster.id, 'measuredValue', Math.round(state.temperature * 100));
+            break;
+          case 'humidity':
+            if (state.humidity !== undefined) await update(endpoint, RelativeHumidityMeasurement.Cluster.id, 'measuredValue', Math.round(state.humidity * 100));
+            break;
+          case 'contact':
+            if (state.contact !== undefined) await update(endpoint, BooleanState.Cluster.id, 'stateValue', state.contact);
+            break;
+          case 'motion':
+            if (state.motion !== undefined) {
+              const current = endpoint.getAttribute(OccupancySensing.Cluster.id, 'occupancy') as { occupied?: boolean } | undefined;
+              if (current?.occupied !== state.motion) await endpoint.setAttribute(OccupancySensing.Cluster.id, 'occupancy', { occupied: state.motion }, endpoint.log);
+            }
+            break;
+        }
+      }
+      if (state.battery !== undefined) {
+        await update(root, PowerSource.Cluster.id, 'batPercentRemaining', state.battery * 2);
+        await update(root, PowerSource.Cluster.id, 'batChargeLevel', chargeLevel(state.battery));
+        await update(root, PowerSource.Cluster.id, 'batReplacementNeeded', state.battery <= LOW_BATTERY_PERCENT);
+      }
+    } catch (error) {
+      this.log.debug(`Could not update ${name}: ${errorMessage(error)}`);
+    }
+  }
+}
+
+type ClusterIdArg = Parameters<MatterbridgeEndpoint['setAttribute']>[0];
+
+/** Set an attribute only when it changed, to avoid flooding controllers with identical reports. */
+async function update(endpoint: MatterbridgeEndpoint, clusterId: ClusterIdArg, attribute: string, value: boolean | number): Promise<void> {
+  if (endpoint.getAttribute(clusterId, attribute) === value) return;
+  await endpoint.setAttribute(clusterId, attribute, value, endpoint.log);
+}
+
+function chargeLevel(percent: number): PowerSource.BatChargeLevel {
+  if (percent > LOW_BATTERY_PERCENT) return PowerSource.BatChargeLevel.Ok;
+  return percent > CRITICAL_BATTERY_PERCENT ? PowerSource.BatChargeLevel.Warning : PowerSource.BatChargeLevel.Critical;
+}
+
+function redact(config: PlatformConfig): PlatformConfig {
+  const copy: PlatformConfig = { ...config };
+  for (const key of SENSITIVE_KEYS) if (copy[key]) copy[key] = '********';
+  return copy;
+}
