@@ -38,6 +38,13 @@ jobs:
             fs.writeFileSync(file, source);
           '
       - run: npm test
-      - run: npm publish --provenance --access public
+      # Pre-release versions (1.1.0-beta.1) go to the "beta" tag so normal installs keep the stable version
+      - name: Publish
+        run: |
+          if node -p "require('./package.json').version" | grep -q -- '-'; then
+            npm publish --provenance --access public --tag beta
+          else
+            npm publish --provenance --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
