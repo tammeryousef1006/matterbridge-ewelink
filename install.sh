@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# Matterbridge + eWeLink plugin installer for Linux.
+# Matterbridge installer for Linux, with the plugin named below.
 #
 #   curl -fsSL https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/install.sh | sudo bash
 #   wget -qO- https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/install.sh | sudo bash
 #
 # Installs or updates Node.js (LTS, from the NodeSource repository so normal system updates keep it current),
 # installs Matterbridge for a dedicated "matterbridge" user with its own folders, sets it up as a service that
-# starts at boot, and installs the eWeLink plugin. Running it again updates everything.
+# starts at boot, and installs the plugin. Running it again updates everything.
 #
 # If Matterbridge is already installed in some other way, it is left alone and only the plugin is handled.
+# The eWeLink, TTLock and Tapo installers share the same Matterbridge: running another one adds its plugin.
 #
 # Settings (environment variables, all optional):
 #   MATTERBRIDGE_USER   user that runs Matterbridge (default: matterbridge)
@@ -17,12 +18,18 @@
 
 set -euo pipefail
 
+# ----- The plugin (the only part that differs between the eWeLink, TTLock and Tapo installers) -----
 PLUGIN="matterbridge-ewelink"
+PLUGIN_TITLE="eWeLink"
+# Extra TCP ports the plugin serves, opened in the firewall
+PLUGIN_PORTS=(8284)
+# What to do once Matterbridge runs; %s is this device's IP address
+NEXT_STEP='Open http://%s:8284 and click "Log in with eWeLink".'
+# ------------------------------------------------------------------------------------------------------
 MB_USER="${MATTERBRIDGE_USER:-matterbridge}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 MIN_NODE_MAJOR=20
 FRONTEND_PORT=8283
-LOGIN_PORT=8284
 
 # ----------------------------------------------------------------------------------------------------
 # Output helpers
@@ -79,7 +86,7 @@ elif command -v apk >/dev/null 2>&1; then PM=apk
 else fail "unsupported Linux: no apt, dnf, yum, zypper, pacman or apk found."; fi
 
 DISTRO="$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-Linux}") || echo Linux)"
-echo "${BOLD}Matterbridge + eWeLink installer${RESET} on ${DISTRO} (${PM})"
+echo "${BOLD}Matterbridge + ${PLUGIN_TITLE} installer${RESET} on ${DISTRO} (${PM})"
 
 pkg_install() {
   case "$PM" in
@@ -278,13 +285,15 @@ fi
 
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
   step "Opening firewall ports (firewalld)"
-  firewall-cmd --permanent --add-port="${FRONTEND_PORT}/tcp" --add-port="${LOGIN_PORT}/tcp" --add-port=5540/udp --add-port=5540/tcp --add-service=mdns >/dev/null
+  firewall-cmd --permanent --add-port="${FRONTEND_PORT}/tcp" --add-port=5540/udp --add-port=5540/tcp --add-service=mdns >/dev/null
+  for port in ${PLUGIN_PORTS[@]+"${PLUGIN_PORTS[@]}"}; do firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null; done
   firewall-cmd --reload >/dev/null
-  ok "Opened ${FRONTEND_PORT}, ${LOGIN_PORT}, 5540 (Matter) and mDNS"
+  ok "Opened ${FRONTEND_PORT}${PLUGIN_PORTS[*]:+, ${PLUGIN_PORTS[*]}}, 5540 (Matter) and mDNS"
 elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   step "Opening firewall ports (ufw)"
-  for rule in "${FRONTEND_PORT}/tcp" "${LOGIN_PORT}/tcp" 5540/udp 5540/tcp 5353/udp; do ufw allow "$rule" >/dev/null; done
-  ok "Opened ${FRONTEND_PORT}, ${LOGIN_PORT}, 5540 (Matter) and mDNS"
+  for rule in "${FRONTEND_PORT}/tcp" 5540/udp 5540/tcp 5353/udp; do ufw allow "$rule" >/dev/null; done
+  for port in ${PLUGIN_PORTS[@]+"${PLUGIN_PORTS[@]}"}; do ufw allow "${port}/tcp" >/dev/null; done
+  ok "Opened ${FRONTEND_PORT}${PLUGIN_PORTS[*]:+, ${PLUGIN_PORTS[*]}}, 5540 (Matter) and mDNS"
 fi
 
 # ----------------------------------------------------------------------------------------------------
@@ -299,5 +308,5 @@ echo
 echo "${GREEN}${BOLD}Done!${RESET}"
 if [ "$SERVICE_STARTED" = true ]; then echo "Matterbridge is starting; give it a minute, then:"; fi
 echo "  1. Open ${BOLD}http://${IP}:${FRONTEND_PORT}${RESET} and pair Matterbridge with your controller (Apple Home, Google Home, SmartThings, Alexa...)."
-echo "  2. Open ${BOLD}http://${IP}:${LOGIN_PORT}${RESET} and click \"Log in with eWeLink\"."
+echo "  2. $(printf "$NEXT_STEP" "$IP")"
 echo "Run this installer again at any time to update Node.js, Matterbridge and the plugin."

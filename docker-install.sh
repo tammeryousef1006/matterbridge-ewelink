@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# Matterbridge + eWeLink plugin with Docker, using the official luligu/matterbridge image.
+# Matterbridge with Docker (official luligu/matterbridge image), with the plugin named below.
+# The eWeLink, TTLock and Tapo installers share the same container: running another one adds its plugin.
 #
 #   curl -fsSL https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/docker-install.sh | sudo bash
 #   wget -qO- https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/docker-install.sh | sudo bash
 #
 # If Docker is not installed it is installed first (Docker's official install script). The data (Matter
-# pairing, settings, eWeLink login) lives in /opt/matterbridge, so updates and reinstalls keep it.
+# pairing, settings, plugin logins) lives in /opt/matterbridge, so updates and reinstalls keep it.
 # Running the script again updates Matterbridge and the plugin.
 #
 # Settings (environment variables, all optional):
@@ -15,11 +16,18 @@
 
 set -euo pipefail
 
+# ----- The plugin (the only part that differs between the eWeLink, TTLock and Tapo installers) -----
 PLUGIN="matterbridge-ewelink"
+PLUGIN_TITLE="eWeLink"
+# Extra TCP ports the plugin serves, opened in the firewall
+PLUGIN_PORTS=(8284)
+# What to do once Matterbridge runs; %s is this device's IP address
+NEXT_STEP='Open http://%s:8284 and click "Log in with eWeLink".'
+# ------------------------------------------------------------------------------------------------------
 NAME="matterbridge"
 DATA_DIR="${MATTERBRIDGE_DIR:-/opt/matterbridge}"
 IMAGE="${MATTERBRIDGE_IMAGE:-luligu/matterbridge:latest}"
-LABEL="io.github.tammeryousef1006.matterbridge-ewelink=installer"
+LABEL="io.github.tammeryousef1006.matterbridge=installer"
 MARKER="$DATA_DIR/.docker-installed-by-script"
 
 if [ -t 1 ]; then BOLD=$'\e[1m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'; RESET=$'\e[0m'; else BOLD=""; GREEN=""; YELLOW=""; RED=""; RESET=""; fi
@@ -59,7 +67,7 @@ progress() {
 
 [ "$(id -u)" -eq 0 ] || fail "please run as root, e.g. with: curl -fsSL <url> | sudo bash"
 [ "$(uname -s)" = "Linux" ] || fail "this installer is for Linux (Matter needs Docker's host network, which only works on Linux)."
-echo "${BOLD}Matterbridge + eWeLink Docker installer${RESET}"
+echo "${BOLD}Matterbridge + ${PLUGIN_TITLE} Docker installer${RESET}"
 
 # ----------------------------------------------------------------------------------------------------
 # 1. Docker
@@ -97,7 +105,7 @@ if [ "$INSTALLED_DOCKER" = true ]; then touch "$MARKER"; fi
 # ----------------------------------------------------------------------------------------------------
 
 if docker container inspect "$NAME" >/dev/null 2>&1; then
-  if [ "$(docker container inspect -f '{{index .Config.Labels "io.github.tammeryousef1006.matterbridge-ewelink"}}' "$NAME")" != "installer" ]; then
+  if [ "$(docker container inspect -f '{{index .Config.Labels "io.github.tammeryousef1006.matterbridge"}}' "$NAME")" != "installer" ]; then
     step "A container named ${NAME} already exists"
     warn "It was not created by this installer, so it is left as it is."
     warn "Install the plugin from its Matterbridge frontend: Plugins → Install plugins → ${PLUGIN}"
@@ -143,11 +151,14 @@ docker run -d --name "$NAME" --label "$LABEL" --network host --restart always --
 ok "Container ${NAME} started (restarts automatically, also after a reboot)"
 
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-  firewall-cmd --permanent --add-port=8283/tcp --add-port=8284/tcp --add-port=5540/udp --add-port=5540/tcp --add-service=mdns >/dev/null && firewall-cmd --reload >/dev/null
-  ok "Opened firewall ports 8283, 8284, 5540 and mDNS"
+  firewall-cmd --permanent --add-port=8283/tcp --add-port=5540/udp --add-port=5540/tcp --add-service=mdns >/dev/null
+  for port in ${PLUGIN_PORTS[@]+"${PLUGIN_PORTS[@]}"}; do firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null; done
+  firewall-cmd --reload >/dev/null
+  ok "Opened firewall ports 8283${PLUGIN_PORTS[*]:+, ${PLUGIN_PORTS[*]}}, 5540 and mDNS"
 elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-  for rule in 8283/tcp 8284/tcp 5540/udp 5540/tcp 5353/udp; do ufw allow "$rule" >/dev/null; done
-  ok "Opened firewall ports 8283, 8284, 5540 and mDNS"
+  for rule in 8283/tcp 5540/udp 5540/tcp 5353/udp; do ufw allow "$rule" >/dev/null; done
+  for port in ${PLUGIN_PORTS[@]+"${PLUGIN_PORTS[@]}"}; do ufw allow "${port}/tcp" >/dev/null; done
+  ok "Opened firewall ports 8283${PLUGIN_PORTS[*]:+, ${PLUGIN_PORTS[*]}}, 5540 and mDNS"
 fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
@@ -157,5 +168,5 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
 echo "${GREEN}${BOLD}Done!${RESET} Matterbridge is starting; the first start installs the plugin and takes a minute or two. Then:"
 echo "  1. Open ${BOLD}http://${IP}:8283${RESET} and pair Matterbridge with your controller (Apple Home, Google Home, SmartThings, Alexa...)."
-echo "  2. Open ${BOLD}http://${IP}:8284${RESET} and click \"Log in with eWeLink\"."
+echo "  2. $(printf "$NEXT_STEP" "$IP")"
 echo "Data is kept in ${DATA_DIR}. Run this installer again at any time to update. See the log with: docker logs -f ${NAME}"

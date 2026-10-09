@@ -68,12 +68,12 @@ ask() {
   [ "$answer" = yes ]
 }
 
-echo "${BOLD}Matterbridge + eWeLink Docker uninstaller${RESET}"
+echo "${BOLD}Matterbridge Docker uninstaller${RESET}"
 
 step "Removing the Matterbridge container"
 if docker container inspect "$NAME" >/dev/null 2>&1; then
-  if [ "$(docker container inspect -f '{{index .Config.Labels "io.github.tammeryousef1006.matterbridge-ewelink"}}' "$NAME")" != "installer" ]; then
-    fail "the container ${NAME} was not created by the eWeLink installer, so it is left alone."
+  if [ "$(docker container inspect -f '{{index .Config.Labels "io.github.tammeryousef1006.matterbridge"}}' "$NAME")" != "installer" ]; then
+    fail "the container ${NAME} was not created by the installer, so it is left alone."
   fi
   IMAGE="$(docker container inspect -f '{{.Config.Image}}' "$NAME")"
   progress "Stopping Matterbridge" docker stop -t 60 "$NAME" || true
@@ -101,7 +101,7 @@ DOCKER_OURS=false
 
 if [ -d "$DATA_DIR" ]; then
   if [ "$REMOVE_DATA" = ask ]; then
-    ask "Also delete all Matterbridge data in ${DATA_DIR} (controller pairing, settings, eWeLink login)? Type yes to delete, or press Enter to keep: " && REMOVE_DATA=1 || REMOVE_DATA=0
+    ask "Also delete all Matterbridge data in ${DATA_DIR} (controller pairing, settings, plugin logins)? Type yes to delete, or press Enter to keep: " && REMOVE_DATA=1 || REMOVE_DATA=0
   fi
   if [ "$REMOVE_DATA" = 1 ]; then
     rm -rf "$DATA_DIR"
@@ -114,7 +114,7 @@ fi
 step "Docker"
 if [ "$DOCKER_OURS" = true ]; then
   if [ "$REMOVE_DOCKER" = ask ]; then
-    ask "Docker was installed by the eWeLink installer. Remove Docker too? Other containers would stop working. Type yes to remove, or press Enter to keep: " && REMOVE_DOCKER=1 || REMOVE_DOCKER=0
+    ask "Docker was installed by the installer. Remove Docker too? Other containers would stop working. Type yes to remove, or press Enter to keep: " && REMOVE_DOCKER=1 || REMOVE_DOCKER=0
   fi
   if [ "$REMOVE_DOCKER" = 1 ]; then
     if command -v apt-get >/dev/null 2>&1; then progress "Removing Docker" env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras || true
@@ -132,5 +132,5 @@ else
 fi
 
 echo
-echo "${GREEN}${BOLD}Done.${RESET} Matterbridge and the eWeLink plugin are removed."
+echo "${GREEN}${BOLD}Done.${RESET} Matterbridge and its plugins are removed."
 echo "Remove the bridge from your controller app (Apple Home, Google Home, SmartThings...) as well."

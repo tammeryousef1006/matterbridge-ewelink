@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Removes what install.sh set up: the Matterbridge service, Matterbridge and its plugins, the firewall
+# Removes what install.sh (from the eWeLink, TTLock or Tapo plugin) set up: the Matterbridge service, Matterbridge and its plugins, the firewall
 # rules, and (if you choose) the "matterbridge" user with all its data, including the Matter pairing and
-# the eWeLink login. Node.js is kept unless REMOVE_NODE=1, because other programs may use it.
+# the plugin logins. Node.js is kept unless REMOVE_NODE=1, because other programs may use it.
 #
 #   curl -fsSL https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/uninstall.sh | sudo bash
 #   wget -qO- https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/uninstall.sh | sudo bash
@@ -58,18 +58,15 @@ progress() {
 MB_HOME="$(getent passwd "$MB_USER" 2>/dev/null | cut -d: -f6 || true)"
 # Also found after an earlier run that removed Matterbridge but kept the data
 if [ -z "$MB_HOME" ] || { [ ! -d "$MB_HOME/.npm-global" ] && [ ! -d "$MB_HOME/.matterbridge" ]; }; then
-  echo "No Matterbridge installation from the eWeLink installer was found (user ${MB_USER})."
-  if command -v npm >/dev/null 2>&1 && npm ls -g --depth=0 matterbridge-ewelink >/dev/null 2>&1; then
-    npm uninstall -g matterbridge-ewelink >/dev/null 2>&1 && echo "Removed the matterbridge-ewelink plugin from the global npm folder."
-  fi
-  echo "If Matterbridge was installed another way, remove the eWeLink plugin in the Matterbridge frontend (Plugins)."
+  echo "No Matterbridge installation from the installer was found (user ${MB_USER})."
+  echo "If Matterbridge was installed another way, remove the plugin in the Matterbridge frontend (Plugins)."
   exit 0
 fi
 
 # Asking needs the keyboard, which is not stdin when the script is piped from curl
 if [ "$REMOVE_DATA" = ask ]; then
   if [ -r /dev/tty ]; then
-    echo "Also delete all Matterbridge data (controller pairing, settings, eWeLink login) and the ${MB_USER} user?"
+    echo "Also delete all Matterbridge data (controller pairing, settings, plugin logins) and the ${MB_USER} user?"
     printf "Type yes to delete, or press Enter to keep the data: "
     read -r answer </dev/tty || answer=""
     [ "$answer" = yes ] && REMOVE_DATA=1 || REMOVE_DATA=0
@@ -78,7 +75,7 @@ if [ "$REMOVE_DATA" = ask ]; then
   fi
 fi
 
-echo "${BOLD}Matterbridge + eWeLink uninstaller${RESET}"
+echo "${BOLD}Matterbridge uninstaller${RESET}"
 
 step "Stopping the Matterbridge service"
 if [ -f /etc/systemd/system/matterbridge.service ]; then
@@ -118,7 +115,7 @@ if [ "$REMOVE_DATA" = 1 ]; then
   ok "Deleted ${MB_HOME}"
 else
   step "Keeping data"
-  ok "Pairing, settings and the eWeLink login stay in ${MB_HOME}; running the installer again picks them up."
+  ok "Pairing, settings and the plugin logins stay in ${MB_HOME}; running the installer again picks them up."
   ok "To delete them later: run this uninstaller again with REMOVE_DATA=1"
 fi
 
@@ -141,5 +138,5 @@ if [ "$REMOVE_NODE" = 1 ]; then
 fi
 
 echo
-echo "${GREEN}${BOLD}Done.${RESET} Matterbridge and the eWeLink plugin are removed."
+echo "${GREEN}${BOLD}Done.${RESET} Matterbridge and its plugins are removed."
 echo "Remove the bridge from your controller app (Apple Home, Google Home, SmartThings...) as well."
