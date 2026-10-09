@@ -41,7 +41,13 @@ jobs:
       # Pre-release versions (1.1.0-beta.1) go to the "beta" tag so normal installs keep the stable version
       - name: Publish
         run: |
-          if node -p "require('./package.json').version" | grep -q -- '-'; then
+          VERSION=$(node -p "require('./package.json').version")
+          # A release for a version that is already on npm only adds the GitHub release
+          if npm view "matterbridge-ewelink@$VERSION" version >/dev/null 2>&1; then
+            echo "matterbridge-ewelink $VERSION is already on npm, nothing to publish."
+            exit 0
+          fi
+          if echo "$VERSION" | grep -q -- '-'; then
             npm publish --provenance --access public --tag beta
           else
             npm publish --provenance --access public
