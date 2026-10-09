@@ -5,6 +5,10 @@ import { WebSocketServer } from 'ws';
 import { EWeLinkSocket } from '../dist/ewelinkSocket.js';
 
 const silentLog = { info() {}, warn() {}, error() {}, debug() {} };
+const recordingLog = () => {
+  const warnings = [];
+  return { warnings, info() {}, error() {}, debug() {}, warn: (message) => warnings.push(message) };
+};
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check, timeout = 3000) {
   const start = Date.now();
@@ -23,7 +27,7 @@ afterEach(async () => {
 });
 
 /** Fake eWeLink WebSocket server: answers userOnline like the official API. */
-async function startServer({ error = 0, hbInterval = 145 } = {}) {
+async function startServer({ error = 0, hbInterval = 145, silent = false, noSequence = false } = {}) {
   const received = [];
   const clients = [];
   server = new WebSocketServer({ port: 0 });
@@ -34,7 +38,8 @@ async function startServer({ error = 0, hbInterval = 145 } = {}) {
       received.push(text);
       if (text === 'ping') return ws.send('pong');
       const message = JSON.parse(text);
-      if (message.action === 'userOnline') {
+      if (message.action === 'userOnline' && !silent) {
+        if (noSequence) return ws.send(JSON.stringify({ error: 0, apikey: message.apikey, config: { hb: 1, hbInterval } }));
         ws.send(JSON.stringify(error ? { error, reason: 'Authentication Failed', sequence: message.sequence } : { error: 0, apikey: message.apikey, config: { hb: 1, hbInterval }, sequence: message.sequence }));
       }
     });
@@ -132,4 +137,47 @@ test('keeps retrying when credentials are not available', async () => {
   });
   socket.start();
   await until(() => calls >= 3);
+});
+
+test('accepts a login answer without the sequence', async () => {
+  const { port } = await startServer({ noSequence: true });
+  createSocket(port);
+  socket.start();
+  await until(() => socket.isConnected);
+});
+
+test('warns once with the reason when the login is refused', async () => {
+  const { port, received } = await startServer({ error: 406 });
+  const log = recordingLog();
+  createSocket(port, { log });
+  socket.start();
+  await until(() => received.length >= 3);
+  assert.equal(log.warnings.length, 1);
+  assert.match(log.warnings[0], /logged in with the same app elsewhere \(error 406\)/);
+});
+
+test('warns when no server is available', async () => {
+  const log = recordingLog();
+  socket = new EWeLinkSocket({
+    auth: async () => {
+      throw new Error('eWeLink error 401: app has no permission');
+    },
+    log,
+    onUpdate() {},
+    onOnline() {},
+    retryDelays: [20],
+  });
+  socket.start();
+  await until(() => log.warnings.length === 1);
+  await wait(100);
+  assert.equal(log.warnings.length, 1);
+  assert.match(log.warnings[0], /could not get a server: eWeLink error 401: app has no permission/);
+});
+
+test('warns when the server cannot be reached', async () => {
+  const log = recordingLog();
+  createSocket(1, { log });
+  socket.start();
+  await until(() => log.warnings.length === 1);
+  assert.match(log.warnings[0], /connection to 127\.0\.0\.1 failed/);
 });

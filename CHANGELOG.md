@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1
+- Live updates: the reason they can't connect is now logged as a warning (once per cause) instead of only in the debug log
+- Live updates: accept eWeLink's login answer even without the request sequence, and give up on a login that gets no answer within 20 seconds
+
 ## 1.1.0 (2026-10-09)
 - Live updates over eWeLink's WebSocket: changes show up in Matter right away instead of after the next poll (polling every 5 minutes remains as a safety net; `liveUpdates` option to turn it off)
 - New device types, built from the official eWeLink UIID protocol and SonoffLAN (not yet tested with real devices):

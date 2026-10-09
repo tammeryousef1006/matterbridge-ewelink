@@ -24,6 +24,8 @@ const STABLE_CONNECTION_MS = 5 * 60_000;
 const DEFAULT_HEARTBEAT_S = 90;
 /** eWeLink answers 406 when the same account and app logged in somewhere else. */
 const OTHER_SESSION_ERROR = 406;
+/** Give up on a connection that has not finished the userOnline login in this time. */
+const LOGIN_TIMEOUT_MS = 20_000;
 
 /**
  * eWeLink live updates (official API center v2, "Real Time Control Device"): get a server from the
@@ -38,6 +40,10 @@ export class EWeLinkSocket {
   private connectedAt = 0;
   private stopped = true;
   private connected = false;
+  /** Last problem reported, so a retry loop with the same cause logs it once. */
+  private lastProblem: string | undefined;
+  /** A cause was already found for the current connection attempt. */
+  private attemptReported = false;
 
   constructor(private readonly options: EWeLinkSocketOptions) {}
 
@@ -64,20 +70,29 @@ export class EWeLinkSocket {
 
   private async connect(): Promise<void> {
     if (this.stopped) return;
+    this.attemptReported = false;
     let auth: EWeLinkSocketAuth;
     try {
       auth = await this.options.auth();
     } catch (error) {
-      this.options.log.debug(`eWeLink live updates unavailable: ${errorMessage(error)}`);
+      this.problem(`could not get a server: ${errorMessage(error)}`);
       this.scheduleRetry();
       return;
     }
     if (this.stopped) return;
 
     const url = this.options.url?.(auth.domain, auth.port) ?? `wss://${auth.domain}:${auth.port}/api/ws`;
+    this.options.log.debug(`Connecting to eWeLink live updates at ${url}`);
     const ws = new WebSocket(url, { handshakeTimeout: 15_000 });
     this.ws = ws;
     const sequence = String(Date.now());
+    let lastError: string | undefined;
+    const loginTimer = setTimeout(() => {
+      if (this.connected || this.ws !== ws) return;
+      lastError = 'eWeLink did not answer the login';
+      ws.terminate();
+    }, LOGIN_TIMEOUT_MS);
+    loginTimer.unref?.();
 
     ws.on('open', () => {
       ws.send(
@@ -104,12 +119,17 @@ export class EWeLinkSocket {
       } catch {
         return;
       }
-      this.handleMessage(ws, message, sequence);
+      this.handleMessage(ws, message);
     });
 
-    ws.on('error', (error) => this.options.log.debug(`eWeLink live update connection error: ${errorMessage(error)}`));
-    ws.on('close', () => {
+    ws.on('error', (error) => {
+      lastError = errorMessage(error);
+      this.options.log.debug(`eWeLink live update connection error: ${lastError}`);
+    });
+    ws.on('close', (code) => {
+      clearTimeout(loginTimer);
       if (this.ws !== ws) return;
+      if (!this.connected && !this.stopped && !this.attemptReported) this.problem(`connection to ${auth.domain} failed: ${lastError ?? `closed (code ${code})`}`);
       this.ws = undefined;
       const wasConnected = this.connected;
       this.cleanup();
@@ -120,15 +140,16 @@ export class EWeLinkSocket {
     });
   }
 
-  private handleMessage(ws: WebSocket, message: Record<string, unknown>, sequence: string): void {
-    // Answer to userOnline
-    if (!this.connected && message.sequence === sequence && message.action === undefined) {
+  private handleMessage(ws: WebSocket, message: Record<string, unknown>): void {
+    // The first message without an action answers userOnline (like SonoffLAN, don't insist on the sequence)
+    if (!this.connected && message.action === undefined) {
+      this.options.log.debug(`eWeLink live update login answer: ${JSON.stringify(message).slice(0, 300)}`);
       const error = Number(message.error ?? 0);
       if (error !== 0) {
         if (error === OTHER_SESSION_ERROR) {
-          this.options.log.warn('eWeLink refused live updates because this account is logged in with the same app elsewhere (error 406).');
+          this.problem('eWeLink refused the login because this account is logged in with the same app elsewhere (error 406)');
         } else {
-          this.options.log.warn(`eWeLink refused live updates (error ${error}${message.reason ? `: ${message.reason}` : ''}).`);
+          this.problem(`eWeLink refused the login (error ${error}${message.reason ? `: ${message.reason}` : ''})`);
         }
         ws.close();
         return;
@@ -139,6 +160,7 @@ export class EWeLinkSocket {
       const interval = Number(config.hbInterval) > 0 ? Number(config.hbInterval) : DEFAULT_HEARTBEAT_S;
       this.heartbeat = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send('ping'), interval * 1000);
       this.heartbeat.unref?.();
+      this.lastProblem = undefined;
       this.options.log.info('eWeLink live updates connected.');
       this.options.onConnected?.(true);
       return;
@@ -149,6 +171,14 @@ export class EWeLinkSocket {
     if (!deviceId || !params) return;
     if (message.action === 'update') this.options.onUpdate(deviceId, params);
     else if (message.action === 'sysmsg' && typeof params.online === 'boolean') this.options.onOnline(deviceId, params.online);
+  }
+
+  /** Report why live updates are not working, once per distinct cause. */
+  private problem(reason: string): void {
+    this.attemptReported = true;
+    if (reason === this.lastProblem) return;
+    this.lastProblem = reason;
+    this.options.log.warn(`eWeLink live updates unavailable, ${reason}. Changes still arrive by polling; retrying.`);
   }
 
   private cleanup(): void {
