@@ -1,8 +1,25 @@
 import { EWeLinkDevice, EWeLinkParams } from './ewelinkApi.js';
+import {
+  CoverProfile,
+  EnergyProfile,
+  FanProfile,
+  LightProfile,
+  LightState,
+  PowerReading,
+  ThermostatProfile,
+  ThermostatState,
+  coverProfile,
+  energyProfile,
+  fanProfile,
+  lightProfile,
+  num,
+  thermostatProfile,
+} from './profiles.js';
 
 /** One Matter-facing function of an eWeLink device; a device can have several (e.g. a TH16 is a switch plus two sensors). */
 export type DeviceFunction =
-  | { kind: 'onOff'; id: string; channel?: number }
+  /** A relay. `light` exposes it as a light (iFan light); `energy` adds power readings. */
+  | { kind: 'onOff'; id: string; channel?: number; light?: boolean; energy?: EnergyProfile }
   /** One security mode of an NSPanel Pro / Bridge as a switch: on while that mode is armed. */
   | { kind: 'security'; id: string; mode: number }
   | { kind: 'temperature'; id: string }
@@ -10,7 +27,15 @@ export type DeviceFunction =
   | { kind: 'contact'; id: string }
   | { kind: 'motion'; id: string }
   /** Bright/dark only (SNZB-06P), reported as a fixed illuminance. */
-  | { kind: 'light'; id: string };
+  | { kind: 'illuminance'; id: string }
+  | { kind: 'light'; id: string; profile: LightProfile }
+  | { kind: 'cover'; id: string; profile: CoverProfile }
+  | { kind: 'fan'; id: string; profile: FanProfile }
+  | { kind: 'thermostat'; id: string; profile: ThermostatProfile }
+  /** Zigbee wireless button: presses arrive as events with key 0 single, 1 double, 2 long. */
+  | { kind: 'button'; id: string }
+  | { kind: 'leak'; id: string }
+  | { kind: 'smoke'; id: string };
 
 export interface DeviceState {
   /** On/off per function id (switches and security modes). */
@@ -24,6 +49,17 @@ export interface DeviceState {
   motion?: boolean;
   /** true when bright, false when dark. */
   bright?: boolean;
+  /** Per light function id. */
+  lights: Record<string, LightState>;
+  /** Curtain position, percent closed. */
+  cover?: number;
+  /** Fan speed 0 (off) - 3. */
+  fan?: number;
+  thermostat?: ThermostatState;
+  leak?: boolean;
+  smoke?: boolean;
+  /** Per relay function id, for devices with power monitoring. */
+  power: Record<string, PowerReading>;
   /** Percent, for battery powered (Zigbee) sensors. */
   battery?: number;
 }
@@ -56,8 +92,14 @@ const ZIGBEE_CONTACT = new Set([3026]);
 const ZIGBEE_MOTION = new Set([2026]);
 // SNZB-06P presence sensor (mains powered)
 const ZIGBEE_PRESENCE = new Set([7016]);
-/** Zigbee sensors that report a battery level. */
-export const BATTERY_UIIDS = new Set([...ZIGBEE_TEMP_HUMIDITY, ...ZIGBEE_CONTACT, ...ZIGBEE_MOTION]);
+// SNZB-01 and SNZB-01P wireless buttons
+const ZIGBEE_BUTTON = new Set([1000, 7000]);
+// Water leak sensors (SNZB-05, SNZB-05P)
+const ZIGBEE_LEAK = new Set([4026, 7019]);
+// Smoke sensor
+const ZIGBEE_SMOKE = new Set([5026]);
+/** Battery powered devices that report a battery level. */
+export const BATTERY_UIIDS = new Set([...ZIGBEE_TEMP_HUMIDITY, ...ZIGBEE_CONTACT, ...ZIGBEE_MOTION, ...ZIGBEE_BUTTON, ...ZIGBEE_LEAK, ...ZIGBEE_SMOKE, 7006, 7017]);
 
 /** Work out what an eWeLink device can do from its UIID and params. Returns an empty list for unsupported devices. */
 export function deviceFunctions(device: EWeLinkDevice): DeviceFunction[] {
@@ -66,9 +108,27 @@ export function deviceFunctions(device: EWeLinkDevice): DeviceFunction[] {
   if (ZIGBEE_MOTION.has(uiid)) return [{ kind: 'motion', id: 'motion' }];
   if (ZIGBEE_PRESENCE.has(uiid)) {
     const functions: DeviceFunction[] = [{ kind: 'motion', id: 'motion' }];
-    if (typeof params.brState === 'string') functions.push({ kind: 'light', id: 'light' });
+    if (typeof params.brState === 'string') functions.push({ kind: 'illuminance', id: 'light' });
     return functions;
   }
+  if (ZIGBEE_BUTTON.has(uiid)) return [{ kind: 'button', id: 'button' }];
+  if (ZIGBEE_LEAK.has(uiid)) return [{ kind: 'leak', id: 'leak' }];
+  if (ZIGBEE_SMOKE.has(uiid)) return [{ kind: 'smoke', id: 'smoke' }];
+
+  const thermostat = thermostatProfile(uiid);
+  if (thermostat) return [{ kind: 'thermostat', id: 'thermostat', profile: thermostat }];
+  // Checked before switches: DualR3 and TX Ultimate in curtain mode drive a motor with their relays
+  const cover = coverProfile(uiid, params);
+  if (cover) return [{ kind: 'cover', id: 'cover', profile: cover }];
+  const fan = fanProfile(uiid);
+  if (fan) {
+    const functions: DeviceFunction[] = [{ kind: 'fan', id: 'fan', profile: fan }];
+    // The iFan's light is relay 0
+    if (uiid === 34) functions.push({ kind: 'onOff', id: 'light', channel: 0, light: true });
+    return functions;
+  }
+  const light = lightProfile(uiid);
+  if (light) return [{ kind: 'light', id: 'light', profile: light }];
   if (ZIGBEE_TEMP_HUMIDITY.has(uiid)) {
     return [
       { kind: 'temperature', id: 'temperature' },
@@ -80,11 +140,12 @@ export function deviceFunctions(device: EWeLinkDevice): DeviceFunction[] {
   if (params.securityType !== undefined && Number.isInteger(Number(params.securityType))) {
     for (const { id, mode } of SECURITY_MODES) functions.push({ kind: 'security', id, mode });
   }
+  const energy = energyProfile(uiid);
   if (Array.isArray(params.switches) && !('switch' in params)) {
     const count = CHANNEL_COUNT[uiid] ?? params.switches.length;
-    for (let channel = 0; channel < count; channel++) functions.push({ kind: 'onOff', id: `channel${channel + 1}`, channel });
+    for (let channel = 0; channel < count; channel++) functions.push({ kind: 'onOff', id: `channel${channel + 1}`, channel, ...(energy ? { energy } : {}) });
   } else if (typeof params.switch === 'string') {
-    functions.push({ kind: 'onOff', id: 'switch' });
+    functions.push({ kind: 'onOff', id: 'switch', ...(energy ? { energy } : {}) });
   }
 
   // TH10/TH16/THR3xx report their probe readings next to the relay; without a probe they say "unavailable"
@@ -96,16 +157,38 @@ export function deviceFunctions(device: EWeLinkDevice): DeviceFunction[] {
 /** Extract the current state from eWeLink params. Values that are missing or "unavailable" are left undefined. */
 export function deviceState(device: EWeLinkDevice, functions: DeviceFunction[]): DeviceState {
   const { uiid, params } = device;
-  const state: DeviceState = { onOff: {} };
+  const state: DeviceState = { onOff: {}, lights: {}, power: {} };
 
   for (const fn of functions) {
-    if (fn.kind === 'security') {
-      if (params.securityType !== undefined) state.onOff[fn.id] = Number(params.securityType) === fn.mode;
-      continue;
+    switch (fn.kind) {
+      case 'security':
+        if (params.securityType !== undefined) state.onOff[fn.id] = Number(params.securityType) === fn.mode;
+        break;
+      case 'onOff': {
+        const value = fn.channel === undefined ? params.switch : channelSwitch(params, fn.channel);
+        if (value === 'on' || value === 'off') state.onOff[fn.id] = value === 'on';
+        if (fn.energy) state.power[fn.id] = fn.energy.read(params, fn.channel);
+        break;
+      }
+      case 'light':
+        state.lights[fn.id] = fn.profile.read(params);
+        break;
+      case 'cover':
+        state.cover = fn.profile.read(params);
+        break;
+      case 'fan':
+        state.fan = fn.profile.read(params);
+        break;
+      case 'thermostat':
+        state.thermostat = fn.profile.read(params);
+        break;
+      case 'leak':
+        if (params.water !== undefined) state.leak = Number(params.water) === 1;
+        break;
+      case 'smoke':
+        if (params.smoke !== undefined) state.smoke = Number(params.smoke) === 1;
+        break;
     }
-    if (fn.kind !== 'onOff') continue;
-    const value = fn.channel === undefined ? params.switch : channelSwitch(params, fn.channel);
-    if (value === 'on' || value === 'off') state.onOff[fn.id] = value === 'on';
   }
 
   if (ZIGBEE_TEMP_HUMIDITY.has(uiid)) {
@@ -164,9 +247,20 @@ function channelSwitch(params: EWeLinkParams, channel: number): unknown {
 }
 
 function scaled(value: unknown, divisor: number): number | undefined {
-  if (value === undefined || value === null || value === '' || value === 'unavailable') return undefined;
-  const number = Number(value);
-  return Number.isFinite(number) ? number / divisor : undefined;
+  const number = num(value);
+  return number === undefined ? undefined : number / divisor;
+}
+
+export type ButtonPress = 'Single' | 'Double' | 'Long';
+
+/**
+ * A button press carried by a device update, or undefined. Presses are only reported as events with a
+ * trigger time; an unchanged trigTime is a replay of the last press (official protocol, SonoffLAN).
+ */
+export function buttonPress(update: EWeLinkParams, lastTrigTime: unknown): ButtonPress | undefined {
+  const trigTime = update.trigTime ?? update.actionTime;
+  if (update.key === undefined || trigTime === undefined || trigTime === lastTrigTime) return undefined;
+  return (['Single', 'Double', 'Long'] as const)[Number(update.key)];
 }
 
 /** Lux reported for a bright/dark-only light sensor. */

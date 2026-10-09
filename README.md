@@ -8,25 +8,41 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 
 - Log in once in your browser on eWeLink's own login page. No developer account and no settings to fill in; the login is renewed automatically.
 - Discovers every device on your account, including devices shared with you.
-- Changes made in the eWeLink app, with a wall button or by eWeLink scenes are picked up by polling.
+- Live updates: changes made in the eWeLink app, with a wall switch or by eWeLink scenes show up in Matter right away (with polling as a fallback).
 - Offline devices show as "not responding" in your controller.
 - Choose which devices to expose with a whitelist/blacklist, and expose any switch as a light instead of an outlet.
 
 ## Supported devices
 
+**Tested with real devices:**
+
 | Device | Examples | Exposed as |
 |--------|----------|------------|
-| Single channel switches and plugs | BASIC/BASICR2/RFR2, MINI/MINIR2, S26/S40, POW, M5 1C | Outlet (or light) |
+| Single channel switches and plugs | BASIC/BASICR2/RFR2, MINI/MINIR2, S26/S40, M5 1C | Outlet (or light) |
 | Multi channel switches | DUALR3, 4CH Pro, T1/TX 2C/3C, TX Ultimate T5 1C–4C, M5 2C/3C, NSPanel | One outlet per channel |
 | Temperature/humidity switches | TH10, TH16, THR316/THR320 | Outlet + temperature + humidity sensor (when a probe is connected) |
-| Zigbee temperature/humidity sensor | SNZB-02, SNZB-02D | Temperature + humidity sensor with battery |
-| Zigbee door/window sensor | SNZB-04 | Contact sensor with battery |
-| Zigbee motion sensor | SNZB-03 | Occupancy sensor with battery |
 | Zigbee presence sensor | SNZB-06P | Occupancy sensor, plus a separate light sensor ("SNZB 06P Light": ~300 lux when bright, ~5 lux when dark) |
-| Security modes | NSPanel Pro (and Bridge-M/U if they report their mode) | Three separate switches, e.g. "NSPanel Away Mode"; turning one on arms that mode, turning it off disarms |
+| Security modes | NSPanel Pro | Three separate switches, e.g. "NSPanel Away Mode"; turning one on arms that mode, turning it off disarms |
 | Virtual switches | eWeLink virtual switches | Outlet |
 
-Other devices are skipped and logged with their UIID. Open an issue with the UIID and the device's params from the debug log to get one added.
+**Supported from the eWeLink protocol, not yet tested with real devices** (please [report](https://github.com/tammeryousef1006/matterbridge-ewelink/issues) what works and what doesn't):
+
+| Device | Examples | Exposed as |
+|--------|----------|------------|
+| Zigbee sensors | SNZB-02/02D temperature/humidity, SNZB-03 motion, SNZB-04 door/window | Sensors with battery |
+| Dimmers | D1, KING-M4, MINI-DIM | Dimmable light |
+| White bulbs | B02 (B02-F, B02-BL), Zigbee CCT lights | White light with brightness and colour temperature |
+| Colour bulbs and strips | B05 (B05-B, B05-BL), L1/L2/L3 strips, Zigbee RGBCW lights | Colour light with brightness, colour and colour temperature |
+| Single colour bulbs | Mosquito killer lamp (UIID 57), Zigbee white lights | Dimmable light |
+| Curtains | KingArt/BINTHEN curtain motors, ZBCurtain, DUALR3 in motor mode, TX Ultimate 3C in curtain mode | Window covering with position |
+| Fans | iFan02/03/04, three-speed fans | Fan with Low/Medium/High, plus a separate "… Light" for the iFan light |
+| Thermostats | TRVZB radiator valve, Wi-Fi thermostats (UIID 127) | Heating thermostat (on/off, target temperature, current temperature) |
+| Zigbee buttons | SNZB-01, SNZB-01P | Button with single, double and long press (needs live updates) |
+| Water leak sensors | SNZB-05, SNZB-05P | Water leak detector with battery |
+| Smoke sensors | Zigbee smoke sensor | Smoke alarm with battery |
+| Power monitoring | POW, POWR2, POWR3, S40, S60, DUALR3 | Outlet with power, voltage and current |
+
+Not supported: RF Bridge and remotes, cameras. Bridges and hubs (ZBBridge, Bridge-M/U) need nothing of their own: their Zigbee devices appear individually. Other devices are skipped and logged with their UIID; turn on `debug` and open an issue with the UIID and the logged params to get one added.
 
 ## Prerequisites
 
@@ -60,7 +76,8 @@ Nothing is required. Optional settings:
 | Option | Description |
 |--------|-------------|
 | `loginPort` | Port of the login page (default `8284`) |
-| `refreshInterval` | Seconds between state refreshes (default `60`, minimum `15`, `0` disables) |
+| `liveUpdates` | Receive changes from eWeLink instantly (default on). Needed for Zigbee buttons |
+| `refreshInterval` | Seconds between state refreshes when live updates are off or disconnected (default `60`, minimum `15`, `0` disables). While live updates are connected the plugin only checks every 5 minutes |
 | `lightList` | Switches (names or device IDs) to expose as lights instead of outlets |
 | `whiteList` | Only expose devices with these names or device IDs |
 | `blackList` | Never expose devices with these names or device IDs |

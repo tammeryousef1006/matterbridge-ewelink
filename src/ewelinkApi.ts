@@ -118,6 +118,25 @@ export function regionBaseUrl(region: EWeLinkRegion): string {
   return region === 'cn' ? 'https://cn-apia.coolkit.cn' : `https://${region}-apia.coolkit.cc`;
 }
 
+/** Service that hands out the WebSocket server for live updates (official API center v2). */
+export function regionDispatchUrl(region: EWeLinkRegion): string {
+  return region === 'cn' ? 'https://cn-dispa.coolkit.cn/dispatch/app' : `https://${region}-dispa.coolkit.cc/dispatch/app`;
+}
+
+/** What the WebSocket handshake needs. */
+export interface EWeLinkSocketAuth {
+  at: string;
+  apikey: string;
+  appid: string;
+  /** wss host and port from the dispatch service. */
+  domain: string;
+  port: number;
+}
+
+interface EWeLinkProfileData {
+  user?: { apikey?: string };
+}
+
 export function isRegion(value: unknown): value is EWeLinkRegion {
   return REGIONS.includes(value as EWeLinkRegion);
 }
@@ -127,6 +146,7 @@ export class EWeLinkApi {
   private readonly http: AxiosInstance;
   private tokens: EWeLinkTokens | undefined;
   private refreshPromise: Promise<void> | null = null;
+  private userApiKey: string | undefined;
 
   constructor(
     private readonly options: EWeLinkApiOptions,
@@ -226,6 +246,7 @@ export class EWeLinkApi {
   }
 
   private setTokens(tokens: EWeLinkTokens | undefined): void {
+    if (!tokens) this.userApiKey = undefined;
     this.tokens = tokens;
     this.options.onTokens?.(tokens ? { ...tokens } : undefined);
   }
@@ -250,6 +271,29 @@ export class EWeLinkApi {
       });
     }
     return devices;
+  }
+
+  /** Everything needed to open the live update WebSocket, refreshing the token first if needed. */
+  async socketAuth(): Promise<EWeLinkSocketAuth> {
+    await this.ensureFreshToken();
+    if (!this.userApiKey) {
+      const profile = await this.authorized<EWeLinkProfileData>('get', '/v2/user/profile', {});
+      if (!profile.user?.apikey) throw new EWeLinkApiError('eWeLink did not return the user apikey.');
+      this.userApiKey = profile.user.apikey;
+    }
+    const tokens = this.tokens;
+    if (!tokens) throw new EWeLinkNotLoggedInError();
+    const url = this.options.baseUrl ? `${this.options.baseUrl.replace(/\/+$/, '')}/dispatch/app` : regionDispatchUrl(tokens.region);
+    let response: { domain?: string; port?: number; error?: number; reason?: string };
+    try {
+      response = (await this.http.get(url, { headers: this.headers(`Bearer ${tokens.accessToken}`) })).data;
+    } catch (error) {
+      throw new EWeLinkApiError(`Request to the dispatch service failed: ${errorMessage(error)}`);
+    }
+    if (!response?.domain || !response.port || (response.error ?? 0) !== 0) {
+      throw new EWeLinkApiError(`The dispatch service did not return a server${response?.reason ? `: ${response.reason}` : ''}.`, response?.error);
+    }
+    return { at: tokens.accessToken, apikey: this.userApiKey, appid: this.options.appId, domain: response.domain, port: Number(response.port) };
   }
 
   /** Send new params (e.g. { switch: 'on' }) to a device. */
@@ -319,7 +363,7 @@ export class EWeLinkApi {
 }
 
 /** 8 character alphanumeric nonce, as eWeLink requires. */
-function nonce(): string {
+export function nonce(): string {
   return crypto.randomBytes(4).toString('hex');
 }
 

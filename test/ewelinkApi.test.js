@@ -71,6 +71,8 @@ const server = http.createServer((req, res) => {
       state.rejectNextToken = false;
       return send(res, { error: 401, msg: 'token invalid' });
     }
+    if (url.pathname === '/v2/user/profile') return send(res, { error: 0, data: { user: { apikey: 'user-apikey' }, region: 'eu' } });
+    if (url.pathname === '/dispatch/app') return send(res, { error: 0, reason: 'ok', IP: '1.2.3.4', port: 8080, domain: 'eu-pconnect3.coolkit.cc' });
     if (url.pathname === '/v2/device/thing' && req.method === 'GET') {
       return send(res, { error: 0, data: { thingList: state.things, total: state.things.length } });
     }
@@ -204,4 +206,17 @@ test('keeps the login on network failures', async () => {
   const { api } = createApi({ baseUrl: 'http://127.0.0.1:1', tokens, timeoutMs: 2000 });
   await assert.rejects(api.listDevices(), (error) => error instanceof EWeLinkApiError && error.errcode === undefined);
   assert.equal(api.isLoggedIn, true);
+});
+
+test('collects what the live update connection needs', async () => {
+  const { api } = await loggedIn();
+  assert.deepEqual(await api.socketAuth(), { at: 'at-1', apikey: 'user-apikey', appid: APP_ID, domain: 'eu-pconnect3.coolkit.cc', port: 8080 });
+  // The user apikey is fetched once
+  await api.socketAuth();
+  assert.equal(state.requests.filter((r) => r.path === '/v2/user/profile').length, 1);
+  assert.equal(state.requests.filter((r) => r.path === '/dispatch/app').length, 2);
+});
+
+test('live updates need a login', async () => {
+  await assert.rejects(createApi().api.socketAuth(), EWeLinkNotLoggedInError);
 });

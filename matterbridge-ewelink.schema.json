@@ -24,9 +24,15 @@
     },
     "refreshInterval": {
       "title": "Refresh interval",
-      "description": "How often (in seconds) to refresh device state. Minimum 15, 0 disables polling.",
+      "description": "How often (in seconds) to refresh device state when live updates are off or disconnected. Minimum 15, 0 disables polling. While live updates are connected the plugin only checks every 5 minutes as a safety net.",
       "type": "number",
       "default": 60
+    },
+    "liveUpdates": {
+      "title": "Live updates",
+      "description": "Receive changes from eWeLink instantly (needed for Zigbee buttons). Turn off to only use polling.",
+      "type": "boolean",
+      "default": true
     },
     "lightList": {
       "description": "Expose these switches (names or device IDs) as lights instead of outlets",
