@@ -26,6 +26,35 @@ ok() { echo "${GREEN}    $*${RESET}"; }
 warn() { echo "${YELLOW}    $*${RESET}"; }
 fail() { echo "${RED}Error: $*${RESET}" >&2; exit 1; }
 
+# Run a slow command with a spinner and elapsed time, so it's clear the installer is working.
+# The command's output goes to a log that is shown if it fails.
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+progress() {
+  local message="$1" pid start frames='|/-\' i=0 status=0
+  shift
+  : >"$LOG"
+  "$@" >>"$LOG" 2>&1 &
+  pid=$!
+  start=$SECONDS
+  if [ -t 1 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r    %s %s (%ds) ' "${frames:i++%4:1}" "$message" "$((SECONDS - start))"
+      sleep 0.25
+    done
+    printf '\r\033[K'
+  else
+    echo "    ${message}..."
+    while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+  fi
+  wait "$pid" || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "${RED}    ${message} failed. Last output:${RESET}" >&2
+    tail -n 15 "$LOG" | sed 's/^/      /' >&2
+  fi
+  return "$status"
+}
+
 [ "$(id -u)" -eq 0 ] || fail "please run as root, e.g. with: curl -fsSL <url> | sudo bash"
 command -v docker >/dev/null 2>&1 || fail "Docker is not installed, so there is no Matterbridge container to remove."
 
@@ -47,12 +76,12 @@ if docker container inspect "$NAME" >/dev/null 2>&1; then
     fail "the container ${NAME} was not created by the eWeLink installer, so it is left alone."
   fi
   IMAGE="$(docker container inspect -f '{{.Config.Image}}' "$NAME")"
-  docker stop -t 60 "$NAME" >/dev/null 2>&1 || true
+  progress "Stopping Matterbridge" docker stop -t 60 "$NAME" || true
   docker rm "$NAME" >/dev/null
   ok "Removed container ${NAME}"
   # Remove the image unless another container still uses it
   if [ -z "$(docker ps -a -q --filter "ancestor=$IMAGE")" ]; then
-    docker rmi "$IMAGE" >/dev/null 2>&1 && ok "Removed image ${IMAGE}" || true
+    progress "Removing the image" docker rmi "$IMAGE" && ok "Removed image ${IMAGE}" || true
   fi
 else
   ok "No container named ${NAME} found"
@@ -88,10 +117,10 @@ if [ "$DOCKER_OURS" = true ]; then
     ask "Docker was installed by the eWeLink installer. Remove Docker too? Other containers would stop working. Type yes to remove, or press Enter to keep: " && REMOVE_DOCKER=1 || REMOVE_DOCKER=0
   fi
   if [ "$REMOVE_DOCKER" = 1 ]; then
-    if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras >/dev/null 2>&1 || true
-    elif command -v dnf >/dev/null 2>&1; then dnf remove -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras >/dev/null 2>&1 || true
-    elif command -v apk >/dev/null 2>&1; then rc-service docker stop >/dev/null 2>&1 || true; apk del --quiet docker >/dev/null 2>&1 || true
-    elif command -v pacman >/dev/null 2>&1; then systemctl disable --now docker >/dev/null 2>&1 || true; pacman -Rns --noconfirm docker >/dev/null 2>&1 || true
+    if command -v apt-get >/dev/null 2>&1; then progress "Removing Docker" env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras || true
+    elif command -v dnf >/dev/null 2>&1; then progress "Removing Docker" dnf remove -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras || true
+    elif command -v apk >/dev/null 2>&1; then rc-service docker stop >/dev/null 2>&1 || true; progress "Removing Docker" apk del docker || true
+    elif command -v pacman >/dev/null 2>&1; then systemctl disable --now docker >/dev/null 2>&1 || true; progress "Removing Docker" pacman -Rns --noconfirm docker || true
     fi
     rm -f "$MARKER"
     ok "Removed Docker"

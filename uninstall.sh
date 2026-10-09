@@ -24,6 +24,35 @@ ok() { echo "${GREEN}    $*${RESET}"; }
 warn() { echo "${YELLOW}    $*${RESET}"; }
 fail() { echo "${RED}Error: $*${RESET}" >&2; exit 1; }
 
+# Run a slow command with a spinner and elapsed time, so it's clear the installer is working.
+# The command's output goes to a log that is shown if it fails.
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+progress() {
+  local message="$1" pid start frames='|/-\' i=0 status=0
+  shift
+  : >"$LOG"
+  "$@" >>"$LOG" 2>&1 &
+  pid=$!
+  start=$SECONDS
+  if [ -t 1 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r    %s %s (%ds) ' "${frames:i++%4:1}" "$message" "$((SECONDS - start))"
+      sleep 0.25
+    done
+    printf '\r\033[K'
+  else
+    echo "    ${message}..."
+    while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+  fi
+  wait "$pid" || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "${RED}    ${message} failed. Last output:${RESET}" >&2
+    tail -n 15 "$LOG" | sed 's/^/      /' >&2
+  fi
+  return "$status"
+}
+
 [ "$(id -u)" -eq 0 ] || fail "please run as root, e.g. with: curl -fsSL <url> | sudo bash"
 
 MB_HOME="$(getent passwd "$MB_USER" 2>/dev/null | cut -d: -f6 || true)"
@@ -53,12 +82,12 @@ echo "${BOLD}Matterbridge + eWeLink uninstaller${RESET}"
 
 step "Stopping the Matterbridge service"
 if [ -f /etc/systemd/system/matterbridge.service ]; then
-  systemctl disable --now matterbridge >/dev/null 2>&1 || true
+  progress "Stopping Matterbridge" systemctl disable --now matterbridge || true
   rm -f /etc/systemd/system/matterbridge.service
   systemctl daemon-reload 2>/dev/null || true
   ok "Removed the systemd service"
 elif [ -f /etc/init.d/matterbridge ]; then
-  rc-service matterbridge stop >/dev/null 2>&1 || true
+  progress "Stopping Matterbridge" rc-service matterbridge stop || true
   rc-update del matterbridge default >/dev/null 2>&1 || true
   rm -f /etc/init.d/matterbridge
   ok "Removed the OpenRC service"
@@ -68,7 +97,7 @@ fi
 pkill -u "$MB_USER" -f matterbridge 2>/dev/null || true
 
 step "Removing Matterbridge and its plugins"
-rm -rf "$MB_HOME/.npm-global" "$MB_HOME/.npm"
+progress "Removing files" rm -rf "$MB_HOME/.npm-global" "$MB_HOME/.npm"
 ok "Removed ${MB_HOME}/.npm-global"
 
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
@@ -96,13 +125,13 @@ fi
 if [ "$REMOVE_NODE" = 1 ]; then
   step "Removing Node.js"
   if command -v apt-get >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq nodejs >/dev/null 2>&1 || true
+    progress "Removing Node.js" env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq nodejs || true
     rm -f /etc/apt/sources.list.d/nodesource.list /etc/apt/sources.list.d/nodesource.sources /etc/apt/keyrings/nodesource.gpg /usr/share/keyrings/nodesource.gpg
   elif command -v dnf >/dev/null 2>&1; then
-    dnf remove -y -q nodejs >/dev/null 2>&1 || true
+    progress "Removing Node.js" dnf remove -y -q nodejs || true
     rm -f /etc/yum.repos.d/nodesource*.repo
   elif command -v yum >/dev/null 2>&1; then
-    yum remove -y -q nodejs >/dev/null 2>&1 || true
+    progress "Removing Node.js" yum remove -y -q nodejs || true
     rm -f /etc/yum.repos.d/nodesource*.repo
   elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive --quiet remove 'nodejs*' 'npm*' >/dev/null 2>&1 || true
   elif command -v pacman >/dev/null 2>&1; then pacman -Rns --noconfirm nodejs npm >/dev/null 2>&1 || true
