@@ -1,6 +1,7 @@
 # Changelog
 
 ## 1.1.1
+- Live updates: take the account apikey from the device list instead of the user profile, which eWeLink doesn't allow for Standard role apps (error 407)
 - Live updates: the reason they can't connect is now logged as a warning (once per cause) instead of only in the debug log
 - Live updates: accept eWeLink's login answer even without the request sequence, and give up on a login that gets no answer within 20 seconds
 

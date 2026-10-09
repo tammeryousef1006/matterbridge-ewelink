@@ -24,8 +24,8 @@ function reset() {
     validRefresh: null,
     rejectNextToken: false,
     things: [
-      { itemType: 1, itemData: { deviceid: 'a1', name: 'Plug', online: true, extra: { uiid: 1 }, params: { switch: 'on', fwVersion: '3.5.0' } } },
-      { itemType: 2, itemData: { deviceid: 'b2', name: 'Shared', online: false, extra: { uiid: 2 }, params: { switches: [] } } },
+      { itemType: 1, itemData: { deviceid: 'a1', apikey: 'user-apikey', name: 'Plug', online: true, extra: { uiid: 1 }, params: { switch: 'on', fwVersion: '3.5.0' } } },
+      { itemType: 2, itemData: { deviceid: 'b2', apikey: 'owner-of-shared', name: 'Shared', online: false, extra: { uiid: 2 }, params: { switches: [] } } },
       { itemType: 3, itemData: { id: 'group', name: 'A group' } },
     ],
   });
@@ -71,7 +71,8 @@ const server = http.createServer((req, res) => {
       state.rejectNextToken = false;
       return send(res, { error: 401, msg: 'token invalid' });
     }
-    if (url.pathname === '/v2/user/profile') return send(res, { error: 0, data: { user: { apikey: 'user-apikey' }, region: 'eu' } });
+    // Standard role apps may not read the profile
+    if (url.pathname === '/v2/user/profile') return send(res, { error: 407, msg: 'the path of request is not allowed with appid' });
     if (url.pathname === '/dispatch/app') return send(res, { error: 0, reason: 'ok', IP: '1.2.3.4', port: 8080, domain: 'eu-pconnect3.coolkit.cc' });
     if (url.pathname === '/v2/device/thing' && req.method === 'GET') {
       return send(res, { error: 0, data: { thingList: state.things, total: state.things.length } });
@@ -211,12 +212,19 @@ test('keeps the login on network failures', async () => {
 test('collects what the live update connection needs', async () => {
   const { api } = await loggedIn();
   assert.deepEqual(await api.socketAuth(), { at: 'at-1', apikey: 'user-apikey', appid: APP_ID, domain: 'eu-pconnect3.coolkit.cc', port: 8080 });
-  // The user apikey is fetched once
+  // The user apikey comes from an own device in the device list, fetched once
   await api.socketAuth();
-  assert.equal(state.requests.filter((r) => r.path === '/v2/user/profile').length, 1);
+  assert.equal(state.requests.filter((r) => r.path === '/v2/device/thing').length, 1);
+  assert.equal(state.requests.filter((r) => r.path === '/v2/user/profile').length, 0);
   assert.equal(state.requests.filter((r) => r.path === '/dispatch/app').length, 2);
 });
 
 test('live updates need a login', async () => {
   await assert.rejects(createApi().api.socketAuth(), EWeLinkNotLoggedInError);
+});
+
+test('live updates need a device of the account itself', async () => {
+  state.things = state.things.filter((t) => t.itemType !== 1);
+  const { api } = await loggedIn();
+  await assert.rejects(api.socketAuth(), /no devices of your own/);
 });

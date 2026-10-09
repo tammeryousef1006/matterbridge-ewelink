@@ -71,6 +71,8 @@ interface EWeLinkThing {
   itemType: number;
   itemData: {
     deviceid?: string;
+    /** apikey of the device owner: the user's own apikey for devices of the account (itemType 1). */
+    apikey?: string;
     name?: string;
     online?: boolean;
     brandName?: string;
@@ -89,6 +91,8 @@ export const OAUTH_PAGE_URL = 'https://c2ccdn.coolkit.cc/oauth/index.html';
 const REGIONS: EWeLinkRegion[] = ['eu', 'us', 'as', 'cn'];
 /** Error codes eWeLink returns when the access token is invalid or expired. */
 const TOKEN_ERROR_CODES = new Set([401, 402, 406]);
+/** Item type of devices that belong to the account (2 is shared with it, 3 a group). */
+const OWN_DEVICE = 1;
 /** Item types of devices in the thing list (own and shared); groups are skipped. */
 const DEVICE_ITEM_TYPES = new Set([1, 2]);
 /** Access tokens last 30 days and refresh tokens 60; renew the access token a few days early. */
@@ -133,9 +137,7 @@ export interface EWeLinkSocketAuth {
   port: number;
 }
 
-interface EWeLinkProfileData {
-  user?: { apikey?: string };
-}
+
 
 export function isRegion(value: unknown): value is EWeLinkRegion {
   return REGIONS.includes(value as EWeLinkRegion);
@@ -259,6 +261,7 @@ export class EWeLinkApi {
       if (!DEVICE_ITEM_TYPES.has(thing.itemType)) continue;
       const item = thing.itemData;
       if (!item?.deviceid) continue;
+      if (thing.itemType === OWN_DEVICE && item.apikey) this.userApiKey = item.apikey;
       devices.push({
         deviceid: item.deviceid,
         name: (item.name || item.deviceid).trim(),
@@ -276,11 +279,9 @@ export class EWeLinkApi {
   /** Everything needed to open the live update WebSocket, refreshing the token first if needed. */
   async socketAuth(): Promise<EWeLinkSocketAuth> {
     await this.ensureFreshToken();
-    if (!this.userApiKey) {
-      const profile = await this.authorized<EWeLinkProfileData>('get', '/v2/user/profile', {});
-      if (!profile.user?.apikey) throw new EWeLinkApiError('eWeLink did not return the user apikey.');
-      this.userApiKey = profile.user.apikey;
-    }
+    // The user apikey comes with the account's own devices; /v2/user/profile is not open to Standard role apps
+    if (!this.userApiKey) await this.listDevices();
+    if (!this.userApiKey) throw new EWeLinkApiError('there are no devices of your own on this eWeLink account.');
     const tokens = this.tokens;
     if (!tokens) throw new EWeLinkNotLoggedInError();
     const url = this.options.baseUrl ? `${this.options.baseUrl.replace(/\/+$/, '')}/dispatch/app` : regionDispatchUrl(tokens.region);
