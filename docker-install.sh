@@ -28,6 +28,35 @@ ok() { echo "${GREEN}    $*${RESET}"; }
 warn() { echo "${YELLOW}    $*${RESET}"; }
 fail() { echo "${RED}Error: $*${RESET}" >&2; exit 1; }
 
+# Run a slow command with a spinner and elapsed time, so it's clear the installer is working.
+# The command's output goes to a log that is shown if it fails.
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+progress() {
+  local message="$1" pid start frames='|/-\' i=0 status=0
+  shift
+  : >"$LOG"
+  "$@" >>"$LOG" 2>&1 &
+  pid=$!
+  start=$SECONDS
+  if [ -t 1 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r    %s %s (%ds) ' "${frames:i++%4:1}" "$message" "$((SECONDS - start))"
+      sleep 0.25
+    done
+    printf '\r\033[K'
+  else
+    echo "    ${message}..."
+    while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+  fi
+  wait "$pid" || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "${RED}    ${message} failed. Last output:${RESET}" >&2
+    tail -n 15 "$LOG" | sed 's/^/      /' >&2
+  fi
+  return "$status"
+}
+
 [ "$(id -u)" -eq 0 ] || fail "please run as root, e.g. with: curl -fsSL <url> | sudo bash"
 [ "$(uname -s)" = "Linux" ] || fail "this installer is for Linux (Matter needs Docker's host network, which only works on Linux)."
 echo "${BOLD}Matterbridge + eWeLink Docker installer${RESET}"
@@ -43,13 +72,13 @@ if command -v docker >/dev/null 2>&1; then
 else
   warn "Docker is not installed. Installing it now with Docker's official installer..."
   if command -v apk >/dev/null 2>&1; then
-    apk add --quiet docker
+    progress "Installing Docker" apk add docker || fail "Docker could not be installed."
     rc-update add docker default >/dev/null 2>&1 || true
   elif command -v pacman >/dev/null 2>&1; then
-    pacman -Sy --noconfirm --needed docker >/dev/null
+    progress "Installing Docker" pacman -Sy --noconfirm --needed docker || fail "Docker could not be installed."
   else
     command -v curl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null; } || { command -v dnf >/dev/null 2>&1 && dnf install -y -q curl >/dev/null; } || fail "curl is needed to install Docker."
-    curl -fsSL https://get.docker.com | sh >/dev/null 2>&1 || fail "Docker could not be installed. Install it from https://docs.docker.com/engine/install/ and run this script again."
+    progress "Installing Docker (this takes a few minutes)" sh -c "curl -fsSL https://get.docker.com | sh" || fail "Docker could not be installed. Install it from https://docs.docker.com/engine/install/ and run this script again."
   fi
   INSTALLED_DOCKER=true
   ok "Installed $(docker --version | sed 's/,.*//')"
@@ -84,8 +113,8 @@ fi
 # ----------------------------------------------------------------------------------------------------
 
 step "Downloading the Matterbridge image (${IMAGE})"
-docker pull -q "$IMAGE" >/dev/null || fail "could not download ${IMAGE}."
-ok "Done"
+progress "Downloading the image" docker pull "$IMAGE" || fail "could not download ${IMAGE}."
+ok "Downloaded"
 
 mkdir -p "$DATA_DIR/Matterbridge" "$DATA_DIR/.matterbridge" "$DATA_DIR/.mattercert"
 VOLUMES=(-v "$DATA_DIR/Matterbridge:/root/Matterbridge" -v "$DATA_DIR/.matterbridge:/root/.matterbridge" -v "$DATA_DIR/.mattercert:/root/.mattercert")
@@ -99,7 +128,7 @@ fi
 
 # Register the plugin before Matterbridge starts; the image reinstalls registered plugins on every start
 step "Adding ${PLUGIN}"
-if docker run --rm "${VOLUMES[@]}" --entrypoint sh "$IMAGE" -c "npm install -g --omit=dev --no-fund --no-audit ${PLUGIN}@latest >/dev/null 2>&1 && matterbridge -add ${PLUGIN}" >/dev/null 2>&1; then
+if progress "Installing the plugin" docker run --rm "${VOLUMES[@]}" --entrypoint sh "$IMAGE" -c "npm install -g --omit=dev --no-fund --no-audit ${PLUGIN}@latest && matterbridge -add ${PLUGIN}"; then
   ok "Added ${PLUGIN}"
 else
   warn "Could not add ${PLUGIN} automatically; add it in the frontend under Plugins."

@@ -34,6 +34,35 @@ ok() { echo "${GREEN}    $*${RESET}"; }
 warn() { echo "${YELLOW}    $*${RESET}"; }
 fail() { echo "${RED}Error: $*${RESET}" >&2; exit 1; }
 
+# Run a slow command with a spinner and elapsed time, so it's clear the installer is working.
+# The command's output goes to a log that is shown if it fails.
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+progress() {
+  local message="$1" pid start frames='|/-\' i=0 status=0
+  shift
+  : >"$LOG"
+  "$@" >>"$LOG" 2>&1 &
+  pid=$!
+  start=$SECONDS
+  if [ -t 1 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r    %s %s (%ds) ' "${frames:i++%4:1}" "$message" "$((SECONDS - start))"
+      sleep 0.25
+    done
+    printf '\r\033[K'
+  else
+    echo "    ${message}..."
+    while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+  fi
+  wait "$pid" || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "${RED}    ${message} failed. Last output:${RESET}" >&2
+    tail -n 15 "$LOG" | sed 's/^/      /' >&2
+  fi
+  return "$status"
+}
+
 # ----------------------------------------------------------------------------------------------------
 # Checks
 # ----------------------------------------------------------------------------------------------------
@@ -68,7 +97,7 @@ pkg_install() {
 # ----------------------------------------------------------------------------------------------------
 
 step "Checking required tools"
-if [ "$PM" = apt ]; then apt-get update -qq >/dev/null; fi
+if [ "$PM" = apt ]; then progress "Updating package lists" apt-get update -qq || fail "apt-get update failed."; fi
 NEEDED=()
 command -v curl >/dev/null 2>&1 || NEEDED+=(curl)
 [ -e /etc/ssl/certs/ca-certificates.crt ] || [ -d /etc/pki/tls/certs ] || NEEDED+=(ca-certificates)
@@ -85,13 +114,13 @@ node_major() { node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || echo 0; }
 nodesource() {
   local setup
   setup="$(mktemp)"
-  if curl -fsSL "https://${1}.nodesource.com/setup_${NODE_MAJOR}.x" -o "$setup" && bash "$setup" >/dev/null 2>&1; then
+  if curl -fsSL "https://${1}.nodesource.com/setup_${NODE_MAJOR}.x" -o "$setup" && progress "Adding the NodeSource repository" bash "$setup"; then
     rm -f "$setup"
-    pkg_install nodejs
+    progress "Installing Node.js ${NODE_MAJOR}" pkg_install nodejs || fail "Node.js could not be installed."
   else
     rm -f "$setup"
     warn "Could not set up the NodeSource repository, trying the Node.js package of ${DISTRO}"
-    pkg_install nodejs npm || pkg_install nodejs || true
+    progress "Installing Node.js" pkg_install nodejs npm || progress "Installing Node.js" pkg_install nodejs || true
   fi
 }
 
@@ -174,7 +203,7 @@ as_mb() {
 # ----------------------------------------------------------------------------------------------------
 
 step "Installing Matterbridge and ${PLUGIN} (this can take a few minutes)"
-as_mb npm install -g --omit=dev --no-fund --no-audit matterbridge@latest "${PLUGIN}@latest" >/dev/null
+progress "Installing Matterbridge and the plugin" as_mb npm install -g --omit=dev --no-fund --no-audit matterbridge@latest "${PLUGIN}@latest" || fail "Matterbridge could not be installed."
 MB_VERSION="$(as_mb npm ls -g --depth=0 matterbridge 2>/dev/null | grep -o 'matterbridge@[0-9][^ ]*' || true)"
 PLUGIN_VERSION="$(as_mb npm ls -g --depth=0 "$PLUGIN" 2>/dev/null | grep -o "${PLUGIN}@[0-9][^ ]*" || true)"
 ok "Installed ${MB_VERSION:-matterbridge} and ${PLUGIN_VERSION:-$PLUGIN}"
