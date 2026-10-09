@@ -88,11 +88,20 @@ The login is stored in `~/Matterbridge/matterbridge-ewelink/tokens.json`. Delete
 
 > **Note:** eWeLink allows one session per app per account. Logging in to the same eWeLink account with this plugin on a second Matterbridge logs the first one out.
 
+## Updating
+
+Update the plugin from the Matterbridge frontend and restart Matterbridge.
+
+> **SmartThings users:** SmartThings keeps the device type it saw when a device was first added. After an update that changes how devices are detected (for example 1.1.0, which added lights, curtains, fans, thermostats and sensors, and fixed channel counts), **remove the plugin in Matterbridge and install it again**, then restart. Your devices are removed from SmartThings and added back with their new type.
+>
+> Afterwards, check your SmartThings rooms, routines and scenes: re-added devices may need to be put back in them. Your eWeLink login is normally kept; if the log says *Not logged in*, open the login page and log in again.
+
 ## Troubleshooting
 
 - **The login page doesn't open**: check that your phone/computer is on the same network as Matterbridge and that port 8284 is not blocked or used by another program (change `loginPort` if it is).
 - **"Returning to Matterbridge..." never finishes**: the browser could not reach the Matterbridge address. Open the login page again from a device on the same network.
 - **Devices don't appear after logging in**: restart Matterbridge.
+- **A device shows the wrong type or missing switches in SmartThings after an update**: remove the plugin in Matterbridge and install it again (see [Updating](#updating)).
 - **A device is skipped as unsupported**: enable `debug`, restart, and include the logged UIID in an issue.
 - **A command fails with "device is offline"**: the device is not connected to the eWeLink cloud. Check its Wi-Fi or Zigbee bridge.
 
