@@ -52,12 +52,126 @@ Not supported: RF Bridge and remotes, cameras. Bridges and hubs (ZBBridge, Bridg
 
 ## Installation
 
+Pick one of these. The one-line installers work on Debian, Ubuntu, Raspberry Pi OS, Fedora, RHEL-like systems, openSUSE, Arch and Alpine, on a PC, a Raspberry Pi, a VM or a Proxmox LXC.
+
+> **curl or wget missing?** Minimal systems (such as Proxmox LXC templates) often have neither. Install one first, e.g. `sudo apt update && sudo apt install -y curl` (Debian/Ubuntu) or `sudo dnf install -y curl` (Fedora/RHEL), or the same with `wget`.
+>
+> **Logged in as root** (usual in an LXC)? Leave out `sudo` in the commands below.
+
+### Option 1: Standalone (recommended)
+
+Installs Node.js (if missing or older than 20), Matterbridge and the eWeLink plugin, and runs Matterbridge as a service that starts on boot.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/install.sh | sudo bash
+```
+
+or with wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/install.sh | sudo bash
+```
+
+- Node.js comes from the official NodeSource repository, so `apt upgrade` (or `dnf upgrade`) keeps it up to date without breaking Matterbridge.
+- Matterbridge runs as its own `matterbridge` user; its data is in `/var/lib/matterbridge`.
+- Already ran the installer of another of my plugins ([eWeLink](https://github.com/tammeryousef1006/matterbridge-ewelink), [TTLock](https://github.com/tammeryousef1006/matterbridge-ttlock), [Tapo](https://github.com/tammeryousef1006/matterbridge-tapo))? Run this one too: it finds that Matterbridge and just adds the eWeLink plugin to it. Nothing else changes.
+- Matterbridge installed some other way? The installer leaves it alone and only adds the plugin.
+
+### Option 2: Docker
+
+Runs Matterbridge in the official [`luligu/matterbridge`](https://hub.docker.com/r/luligu/matterbridge) Docker image with the eWeLink plugin.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/docker-install.sh | sudo bash
+```
+
+or with wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/docker-install.sh | sudo bash
+```
+
+- **If Docker is not installed, the script installs it first** (Docker's official installer and repository, so `apt upgrade` keeps Docker up to date). If Docker is already installed, it is used as it is.
+- The container is called `matterbridge`, uses the host network (needed for Matter) and restarts automatically. Its data is in `/opt/matterbridge`.
+- Running the Docker installer of another of my plugins adds that plugin to the same container.
+- In a Proxmox LXC, enable **nesting** (and **keyctl** for unprivileged containers) under the container's *Options → Features* first.
+
+<details>
+<summary>Prefer Docker Compose?</summary>
+
+```yaml
+services:
+  matterbridge:
+    image: luligu/matterbridge:latest
+    container_name: matterbridge
+    network_mode: host
+    restart: always
+    volumes:
+      - /opt/matterbridge/Matterbridge:/root/Matterbridge
+      - /opt/matterbridge/.matterbridge:/root/.matterbridge
+      - /opt/matterbridge/.mattercert:/root/.mattercert
+```
+
+Run `docker compose up -d`, then install `matterbridge-ewelink` from the frontend (Plugins → Install).
+
+</details>
+
+### Option 3: Proxmox (community helper script)
+
+On the **Proxmox host** shell, create a Matterbridge LXC with the [Proxmox VE community script](https://community-scripts.github.io/ProxmoxVE/scripts?id=matterbridge):
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/matterbridge.sh)"
+```
+
+Then open the frontend at `http://<lxc-ip>:8283`, go to **Plugins**, type `matterbridge-ewelink` under *Install plugins*, click **Install** and restart Matterbridge when asked.
+
+### Option 4: Existing Matterbridge
+
+Requires [Matterbridge](https://github.com/Luligu/matterbridge) 3.0.0 or later. Install `matterbridge-ewelink` from the frontend (Plugins → Install), or:
+
 ```bash
 npm install -g matterbridge-ewelink
 matterbridge -add matterbridge-ewelink
 ```
 
-Or install it from the Matterbridge frontend by searching for `matterbridge-ewelink`.
+### After installing
+
+1. Open `http://<device-ip>:8283` and pair Matterbridge with your controller (Apple Home, Google Home, SmartThings, Alexa...) using the QR code.
+2. Open `http://<device-ip>:8284` and click **Log in with eWeLink** (see [Logging in](#logging-in)).
+
+The installers print the exact address at the end.
+
+### Updating with the installers
+
+- Run the same installer command again: it updates Matterbridge and the plugin and keeps your settings, pairing and logins.
+- You can also update from the Matterbridge frontend.
+- `apt upgrade` updates Node.js or Docker safely and never touches Matterbridge.
+
+### Uninstalling
+
+Use the uninstaller that matches how you installed:
+
+```bash
+# Standalone
+curl -fsSL https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/uninstall.sh | sudo bash
+# Docker
+curl -fsSL https://raw.githubusercontent.com/tammeryousef1006/matterbridge-ewelink/main/docker-uninstall.sh | sudo bash
+```
+
+(`wget -qO- <url> | sudo bash` works too.)
+
+The uninstaller:
+
+1. Removes the eWeLink plugin.
+2. Asks what to do with the other plugins:
+   - Press **Enter** to keep them, so Matterbridge keeps running (the default).
+   - Type plugin names to remove only those.
+   - Type `all` to remove Matterbridge completely.
+3. When Matterbridge is removed, asks whether to delete its data (pairing, settings, plugin logins). The default is to keep it, so a later reinstall picks it up.
+4. For Docker, Docker itself is never removed if you had it before. If the installer installed Docker, you are asked, and the default is to keep it.
+
+Proxmox helper or your own Matterbridge: remove the plugin in the frontend (Plugins).
 
 ## Logging in
 
@@ -90,7 +204,7 @@ The login is stored in `~/Matterbridge/matterbridge-ewelink/tokens.json`. Delete
 
 ## Updating
 
-Update the plugin from the Matterbridge frontend and restart Matterbridge.
+Update the plugin from the Matterbridge frontend and restart Matterbridge, or run your installer command again (see [Updating with the installers](#updating-with-the-installers)).
 
 > **SmartThings users:** SmartThings keeps the device type it saw when a device was first added. After an update that changes how devices are detected (for example 1.1.0, which added lights, curtains, fans, thermostats and sensors, and fixed channel counts), **remove the plugin in Matterbridge and install it again**, then restart. Your devices are removed from SmartThings and added back with their new type.
 >
