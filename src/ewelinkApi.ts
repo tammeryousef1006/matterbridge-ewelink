@@ -46,6 +46,8 @@ export interface EWeLinkDevice {
   brandName?: string;
   productModel?: string;
   fwVersion?: string;
+  /** Key for local (LAN mode) control; the cloud gives it out with the device list. */
+  devicekey?: string;
   params: EWeLinkParams;
 }
 
@@ -75,6 +77,7 @@ interface EWeLinkThing {
     apikey?: string;
     name?: string;
     online?: boolean;
+    devicekey?: string;
     brandName?: string;
     productModel?: string;
     extra?: { uiid?: number; model?: string };
@@ -270,6 +273,7 @@ export class EWeLinkApi {
         brandName: item.brandName,
         productModel: item.productModel || item.extra?.model,
         fwVersion: typeof item.params?.fwVersion === 'string' ? item.params.fwVersion : undefined,
+        devicekey: typeof item.devicekey === 'string' && item.devicekey ? item.devicekey : undefined,
         params: item.params ?? {},
       });
     }

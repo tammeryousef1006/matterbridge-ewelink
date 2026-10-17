@@ -34,6 +34,12 @@
       "type": "boolean",
       "default": true
     },
+    "localControl": {
+      "title": "Local control",
+      "description": "Control Sonoff devices with LAN mode directly on your network (faster, and they keep working when the internet is down). Other devices use the cloud.",
+      "type": "boolean",
+      "default": true
+    },
     "lightList": {
       "description": "Expose these switches (names or device IDs) as lights instead of outlets",
       "type": "array",

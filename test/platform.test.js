@@ -115,3 +115,38 @@ test('live updates are merged into the device state', async () => {
   assert.deepEqual(platform.devices.get('b05').device.params.white, { br: 10, ct: 255 });
   await platform.handleUpdate('unknown', { switch: 'on' });
 });
+
+test('local control: commands go to the device directly, and still work when the cloud says offline', async () => {
+  const local = [];
+  platform.lan.isLocal = (id) => id === 'plug';
+  platform.lan.send = async (id, params) => {
+    local.push([id, params]);
+  };
+  platform.devices.get('plug').device.online = false; // no internet: the cloud cannot reach it
+  assert.deepEqual(await command('ewelink-plug', 'on'), []);
+  assert.deepEqual(local, [['plug', { switch: 'on' }]]);
+  // a command the device refuses locally goes to the cloud
+  platform.devices.get('plug').device.online = true;
+  platform.lan.send = async () => {
+    throw new Error('the device answered error 400');
+  };
+  assert.deepEqual(await command('ewelink-plug', 'off'), [{ switch: 'off' }]);
+  // a local announcement updates the state and marks the device reachable
+  platform.devices.get('pow').device.online = false;
+  await platform.handleUpdate('pow', { switch: 'off' }, true);
+  assert.equal(platform.devices.get('pow').device.online, true);
+  assert.equal(platform.devices.get('pow').device.params.switch, 'off');
+});
+
+test('without internet the plugin starts from the saved device list', async () => {
+  const saved = [{ deviceid: 'saved1', name: 'Saved plug', online: true, uiid: 1, devicekey: 'k', params: { switch: 'off' } }];
+  platform.saveDeviceList(saved);
+  const listDevices = platform.api.listDevices;
+  platform.api.listDevices = async () => {
+    throw new Error('getaddrinfo ENOTFOUND eu-apia.coolkit.cc');
+  };
+  await platform.discoverDevices();
+  assert.ok(endpoints['ewelink-saved1']);
+  assert.equal(platform.deviceKeys.get('saved1'), 'k');
+  platform.api.listDevices = listDevices;
+});

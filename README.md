@@ -9,6 +9,7 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 - Log in once in your browser on eWeLink's own login page. No developer account and no settings to fill in; the login is renewed automatically.
 - Discovers every device on your account, including devices shared with you.
 - Live updates: changes made in the eWeLink app, with a wall switch or by eWeLink scenes show up in Matter right away (with polling as a fallback).
+- Local control: Sonoff devices with LAN mode are controlled directly on your network, so they are faster and keep working when the internet is down (see [Local control](#local-control)). Other devices use the cloud.
 - Offline devices show as "not responding" in your controller.
 - Choose which devices to expose with a whitelist/blacklist, and expose any switch as a light instead of an outlet.
 
@@ -191,6 +192,7 @@ Nothing is required. Optional settings:
 |--------|-------------|
 | `loginPort` | Port of the login page (default `8284`) |
 | `liveUpdates` | Receive changes from eWeLink instantly (default on). Needed for Zigbee buttons |
+| `localControl` | Control devices with LAN mode directly on your network (default on). See [Local control](#local-control) |
 | `refreshInterval` | Seconds between state refreshes when live updates are off or disconnected (default `60`, minimum `15`, `0` disables). While live updates are connected the plugin only checks every 5 minutes |
 | `lightList` | Switches (names or device IDs) to expose as lights instead of outlets |
 | `whiteList` | Only expose devices with these names or device IDs |
@@ -198,9 +200,22 @@ Nothing is required. Optional settings:
 | `appId` / `appSecret` / `redirectUrl` | Advanced: use your own eWeLink developer app instead of the built-in one |
 | `debug` | Enable debug logging |
 
-The login is stored in `~/Matterbridge/matterbridge-ewelink/tokens.json`. Delete it to log out.
+The login is stored in `~/Matterbridge/matterbridge-ewelink/tokens.json`. Delete it to log out. With local control on, the device list and the devices' local keys are saved in `devices.json` next to it, so the plugin can start without internet.
 
 > **Note:** eWeLink allows one session per app per account. Logging in to the same eWeLink account with this plugin on a second Matterbridge logs the first one out.
+
+## Local control
+
+Most Sonoff Wi-Fi devices (MINI, BASIC, S26/S40 plugs, POW, TH, dimmers, wall switches and more) support eWeLink **LAN mode**: they announce themselves on your network and take commands directly. The plugin uses this first and the cloud only as a backup.
+
+- **Internet is needed once**: each device's local key comes from your eWeLink account. After that, devices with local control keep working when the internet is down, even after a Matterbridge restart.
+- **Which devices work offline?** About 30 seconds after Matterbridge starts, the log lists them:
+  - `Local control: 5 of 8 device(s) work without internet: ...`
+  - `On the network but without a local key ...`: restart once while the internet is up.
+  - `Cloud only ...`: Zigbee devices, battery Wi-Fi sensors, cameras and some newer models have no LAN mode. Some newer models have a **LAN control** switch in the eWeLink app (device settings) that must be on.
+- Every command in the log ends with `(local network)` or `(cloud)`.
+- If you pair a device again in the eWeLink app it gets a new key: restart Matterbridge once with internet.
+- Matterbridge must be on the same network as the devices (Docker: host network, which the installers use).
 
 ## Updating
 
@@ -217,7 +232,8 @@ Update the plugin from the Matterbridge frontend and restart Matterbridge, or ru
 - **Devices don't appear after logging in**: restart Matterbridge.
 - **A device shows the wrong type or missing switches in SmartThings after an update**: remove the plugin in Matterbridge and install it again (see [Updating](#updating)).
 - **A device is skipped as unsupported**: enable `debug`, restart, and include the logged UIID in an issue.
-- **A command fails with "device is offline"**: the device is not connected to the eWeLink cloud. Check its Wi-Fi or Zigbee bridge.
+- **A command fails with "device is offline"**: the device is not connected to the eWeLink cloud and not reachable locally. Check its Wi-Fi or Zigbee bridge.
+- **A device stays "Cloud only" although it has LAN mode**: turn on **LAN control** in the eWeLink app (device settings), make sure Matterbridge and the device are on the same network (not a guest Wi-Fi), and restart Matterbridge.
 
 ## For maintainers
 

@@ -63,6 +63,7 @@ import {
 } from './deviceMapper.js';
 import { BUILTIN_APP_ID, BUILTIN_APP_SECRET, BUILTIN_REDIRECT_URL } from './credentials.js';
 import { EWeLinkApi, EWeLinkDevice, EWeLinkNotLoggedInError, EWeLinkParams, EWeLinkTokens, errorMessage } from './ewelinkApi.js';
+import { EWeLinkLan } from './ewelinkLan.js';
 import { EWeLinkSocket } from './ewelinkSocket.js';
 import { LoginServer } from './loginServer.js';
 import {
@@ -85,6 +86,7 @@ export interface EWeLinkPlatformConfig extends PlatformConfig {
   redirectUrl?: string;
   refreshInterval?: number;
   liveUpdates?: boolean;
+  localControl?: boolean;
   lightList?: string[];
   whiteList?: string[];
   blackList?: string[];
@@ -115,6 +117,10 @@ const CRITICAL_BATTERY_PERCENT = 10;
 const DEFAULT_LOGIN_PORT = 8284;
 const SENSITIVE_KEYS = ['appSecret'];
 const TOKENS_FILE = 'tokens.json';
+/** The device list with the local keys, so the plugin starts and controls devices locally without internet. */
+const DEVICES_FILE = 'devices.json';
+/** Time for devices to announce themselves on the network before the local control summary. */
+const LOCAL_SUMMARY_DELAY_MS = 30_000;
 /** Kinds that controllers like SmartThings only show when they are a device of their own. */
 const SPLIT_KINDS = new Set<DeviceFunction['kind']>(['illuminance', 'fan']);
 
@@ -123,6 +129,12 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
   private readonly api: EWeLinkApi;
   private readonly loginServer: LoginServer;
   private readonly socket: EWeLinkSocket;
+  private readonly lan: EWeLinkLan | undefined;
+  private readonly devicesFile: string;
+  /** Local keys by device id (from the cloud list or the saved list). */
+  private readonly deviceKeys = new Map<string, string>();
+  private summaryTimer: NodeJS.Timeout | undefined;
+  private cloudUnreachable = false;
   private readonly loginPort: number;
   private readonly tokensFile: string;
   private readonly devices = new Map<string, EWeLinkMatterDevice>();
@@ -167,6 +179,24 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
       },
     });
 
+    this.devicesFile = path.join(this.matterbridge.matterbridgePluginDirectory, 'matterbridge-ewelink', DEVICES_FILE);
+    this.lan =
+      this.ewelinkConfig.localControl === false
+        ? undefined
+        : new EWeLinkLan({
+            log: this.log,
+            keyFor: (deviceId) => this.deviceKeys.get(deviceId),
+            onUpdate: (deviceId, params) => void this.handleUpdate(deviceId, params, true),
+            onSeen: (deviceId, seen) => {
+              const matterDevice = this.devices.get(deviceId);
+              // on the network again: reachable even when the cloud says offline (internet down)
+              if (matterDevice && seen && !matterDevice.device.online) {
+                matterDevice.device.online = true;
+                void this.applyState(matterDevice);
+              }
+            },
+          });
+
     const port = Number(this.ewelinkConfig.loginPort ?? DEFAULT_LOGIN_PORT);
     this.loginPort = Number.isInteger(port) && port > 0 && port < 65536 ? port : DEFAULT_LOGIN_PORT;
     this.loginServer = new LoginServer({
@@ -196,8 +226,13 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
       );
     }
 
+    this.lan?.start();
     if (this.api.isLoggedIn) await this.discoverDevices();
     else this.showLoginHint();
+    if (this.lan) {
+      this.summaryTimer = setTimeout(() => this.logLocalSummary(), LOCAL_SUMMARY_DELAY_MS);
+      this.summaryTimer.unref?.();
+    }
   }
 
   override async onConfigure(): Promise<void> {
@@ -221,6 +256,8 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = undefined;
     this.socket.stop();
+    this.lan?.stop();
+    if (this.summaryTimer) clearTimeout(this.summaryTimer);
     await this.loginServer.stop();
     await super.onShutdown(reason);
     if (this.config.unregisterOnShutdown === true) await this.unregisterAllDevices();
@@ -235,11 +272,22 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     let devices: EWeLinkDevice[];
     try {
       devices = await this.api.listDevices();
+      this.saveDeviceList(devices);
     } catch (error) {
-      if (error instanceof EWeLinkNotLoggedInError) this.showLoginHint();
-      else this.log.error(`Could not load eWeLink devices: ${errorMessage(error)}`);
-      return;
+      if (error instanceof EWeLinkNotLoggedInError) {
+        this.showLoginHint();
+        return;
+      }
+      // No internet (or eWeLink down): start from the saved list so local control keeps working
+      const saved = this.loadDeviceList();
+      if (!saved.length) {
+        this.log.error(`Could not load eWeLink devices: ${errorMessage(error)}`);
+        return;
+      }
+      this.log.warn(`Could not reach eWeLink (${errorMessage(error)}); using the saved device list (${saved.length} devices). Devices with local control keep working.`);
+      devices = saved;
     }
+    for (const device of devices) if (device.devicekey) this.deviceKeys.set(device.deviceid, device.devicekey);
     this.log.info(`Discovered ${devices.length} eWeLink device(s).`);
 
     for (const device of devices) {
@@ -295,6 +343,42 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     } catch (error) {
       this.log.error(`Could not save the eWeLink login to ${this.tokensFile}: ${errorMessage(error)}`);
     }
+  }
+
+  private saveDeviceList(devices: EWeLinkDevice[]): void {
+    if (!this.lan) return;
+    try {
+      fs.mkdirSync(path.dirname(this.devicesFile), { recursive: true });
+      fs.writeFileSync(this.devicesFile, JSON.stringify({ saved: new Date().toISOString(), devices }, null, 2), { mode: 0o600 });
+    } catch (error) {
+      this.log.warn(`Could not save the device list for offline use: ${errorMessage(error)}`);
+    }
+  }
+
+  private loadDeviceList(): EWeLinkDevice[] {
+    if (!this.lan) return [];
+    try {
+      const saved = JSON.parse(fs.readFileSync(this.devicesFile, 'utf8')) as { devices?: EWeLinkDevice[] };
+      return Array.isArray(saved.devices) ? saved.devices.filter((d) => d && typeof d.deviceid === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Which devices keep working without internet, and why the others don't. */
+  private logLocalSummary(): void {
+    if (!this.lan || this.devices.size === 0) return;
+    const local: string[] = [];
+    const noKey: string[] = [];
+    const notSeen: string[] = [];
+    for (const [id, matterDevice] of this.devices) {
+      if (this.lan.isLocal(id)) local.push(matterDevice.name);
+      else if (this.lan.seen(id)) noKey.push(matterDevice.name);
+      else notSeen.push(matterDevice.name);
+    }
+    this.log.notice(`Local control: ${local.length} of ${this.devices.size} device(s) work without internet${local.length ? `: ${local.join(', ')}` : ''}.`);
+    if (noKey.length) this.log.notice(`On the network but without a local key (log in once more with internet): ${noKey.join(', ')}.`);
+    if (notSeen.length) this.log.notice(`Cloud only (no LAN mode seen; Zigbee, battery or newer devices, or "LAN control" off in the eWeLink app): ${notSeen.join(', ')}.`);
   }
 
   private refreshIntervalSeconds(): number {
@@ -506,13 +590,28 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
   private async send(matterDevice: EWeLinkMatterDevice, label: string, action: string, messages: EWeLinkParams[]): Promise<void> {
     if (messages.length === 0) return;
     this.log.info(`${label}: ${action}...`);
+    const { deviceid, uiid } = matterDevice.device;
+    let via = 'cloud';
     try {
-      if (!matterDevice.device.online) throw new Error('the device is offline in eWeLink');
+      const local = this.lan?.isLocal(deviceid) === true;
+      if (!matterDevice.device.online && !local) throw new Error('the device is offline in eWeLink');
       for (const params of messages) {
-        await this.api.setParams(matterDevice.device.deviceid, params);
+        if (local) {
+          try {
+            await this.lan!.send(deviceid, params, uiid);
+            via = 'local network';
+          } catch (error) {
+            // not accepted locally: the cloud, when it is there
+            this.log.debug(`${label}: local command failed (${errorMessage(error)}), trying the cloud`);
+            await this.api.setParams(deviceid, params);
+            via = 'cloud';
+          }
+        } else {
+          await this.api.setParams(deviceid, params);
+        }
         matterDevice.device.params = mergeParams(matterDevice.device.params, params);
       }
-      this.log.info(`${label}: ${action} done.`);
+      this.log.info(`${label}: ${action} done (${via}).`);
     } catch (error) {
       this.log.error(`${label}: ${action} failed: ${errorMessage(error)}`);
       throw error;
@@ -656,9 +755,13 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
   // -------------------------------------------------------------------------------------------------
 
   /** A live update from the eWeLink WebSocket: only the params that changed. */
-  private async handleUpdate(deviceId: string, params: EWeLinkParams): Promise<void> {
+  private async handleUpdate(deviceId: string, params: EWeLinkParams, local = false): Promise<void> {
     const matterDevice = this.devices.get(deviceId);
     if (!matterDevice) return;
+    if (local) {
+      this.log.debug(`${matterDevice.name}: local update ${JSON.stringify(params)}`);
+      matterDevice.device.online = true;
+    }
     const button = matterDevice.functions.find((fn) => fn.kind === 'button');
     if (button) {
       const press = buttonPress(params, matterDevice.lastTrigTime);
@@ -682,6 +785,10 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
     try {
       const devices = await this.api.listDevices();
       this.lastPoll = Date.now();
+      if (this.cloudUnreachable) this.log.info('eWeLink cloud reachable again.');
+      this.cloudUnreachable = false;
+      this.saveDeviceList(devices);
+      for (const device of devices) if (device.devicekey) this.deviceKeys.set(device.deviceid, device.devicekey);
       for (const device of devices) {
         const matterDevice = this.devices.get(device.deviceid);
         if (!matterDevice) continue;
@@ -690,7 +797,11 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
       }
     } catch (error) {
       if (error instanceof EWeLinkNotLoggedInError) this.showLoginHint();
-      else this.log.warn(`Failed to refresh eWeLink devices: ${errorMessage(error)}`);
+      else if (!this.cloudUnreachable) {
+        // said once until it works again: no internet is a normal state with local control
+        this.cloudUnreachable = true;
+        this.log.warn(`Failed to refresh eWeLink devices: ${errorMessage(error)}${this.lan ? '. Devices with local control keep working.' : ''}`);
+      }
     } finally {
       this.refreshing = false;
     }

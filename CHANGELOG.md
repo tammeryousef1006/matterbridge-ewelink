@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0-beta.1 (2026-10-17)
+- Local control: Sonoff devices with eWeLink LAN mode are found on the network (mDNS) and controlled directly (encrypted with each device's key), so they respond faster and keep working when the internet is down. The cloud stays as a backup and for devices without LAN mode (`localControl` option, on by default)
+- Local state: devices' own announcements update Matter right away, also without internet
+- The device list and local keys are saved, so the plugin starts and controls devices locally without internet
+- The log lists which devices work without internet and why others don't; every command says whether it went over the local network or the cloud
+- A cloud that can't be reached is logged once instead of at every refresh
+
 ## 1.1.1 (2026-10-10)
 - README: SmartThings users should reinstall the plugin after updating so devices are re-added with their new type
 - Live updates: take the account apikey from the device list instead of the user profile, which eWeLink doesn't allow for Standard role apps (error 407)
