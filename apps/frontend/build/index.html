@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>eWeLink Devices</title>
+<style>
+  /* Plugin page: served by Matterbridge at /plugins/matterbridge-ewelink/ (globe icon), data from
+     /plugins/matterbridge-ewelink/api/status (platform.onFetch). Read only: shows which devices work locally. */
+  :root {
+    --bg: #f2f5f9; --surface: #ffffff; --soft: #f6f8fb; --fg: #17212c; --muted: #5d6a78; --line: #dfe5ec;
+    --accent: #2f63d8; --accent-soft: #e8eefc;
+    --ok: #18794e; --ok-soft: #e3f4ea; --wait: #a05a00; --wait-soft: #fff1dc; --bad: #b42318; --bad-soft: #fde9e7;
+    --font-ui: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
+    --font-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e131a; --surface: #161d26; --soft: #1b232e; --fg: #e6ebf1; --muted: #97a4b3; --line: #2a3441;
+    --accent: #7199ff; --accent-soft: #1c2a47; --ok: #55c58f; --ok-soft: #13301f;
+    --wait: #f2a74e; --wait-soft: #2e2312; --bad: #ff8a7d; --bad-soft: #3a1a17; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; overflow-x: hidden; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 15px; line-height: 1.45; }
+  header { display: flex; align-items: center; gap: 14px; padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
+  header .logo { width: 40px; height: 40px; border-radius: 10px; background: var(--accent); color: #fff; display: grid; place-items: center; flex: none; }
+  header h1 { font-size: 21px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header .grow { flex: 1; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 40px; }
+  @media (max-width: 700px) { main { padding: 16px; } header { padding: 14px 16px; } }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--soft); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+  .pill.wait { background: var(--wait-soft); color: var(--wait); border-color: transparent; }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+  .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 700px) { .summary { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 26px; font-weight: 700; margin-top: 2px; }
+  .stat .value small { font-size: 15px; color: var(--muted); font-weight: 600; }
+  .bar { height: 8px; border-radius: 4px; background: var(--soft); margin-top: 8px; overflow: hidden; display: flex; }
+  .bar span { display: block; height: 100%; }
+  .banner { padding: 12px 14px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; }
+  .banner.bad { background: var(--bad-soft); color: var(--bad); }
+  .banner.wait { background: var(--wait-soft); color: var(--wait); }
+  .banner a { color: inherit; font-weight: 700; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .toolbar .grow { flex: 1; }
+  .chip { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); padding: 5px 12px; border-radius: 999px; cursor: pointer; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  input.search { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); min-width: 0; width: 220px; }
+  .list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .dev { display: flex; flex-direction: column; gap: 8px; border-left: 4px solid var(--line); }
+  .dev.local { border-left-color: var(--ok); }
+  .dev.nokey { border-left-color: var(--wait); }
+  .dev .top { display: flex; gap: 8px; align-items: flex-start; }
+  .dev .name { font-weight: 700; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .dev .meta { color: var(--muted); font-size: 13px; }
+  .dev .rows { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; font-size: 13px; }
+  .dev .rows dt { color: var(--muted); }
+  .dev .rows dd { margin: 0; overflow-wrap: anywhere; }
+  .dev .hint { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 6px; }
+  code { font-family: var(--font-mono); font-size: 12px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: 18px; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  button.link { font: inherit; border: none; background: none; color: var(--accent); cursor: pointer; padding: 4px 6px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></div>
+  <div>
+    <h1>eWeLink devices</h1>
+    <div class="sub">Which devices work on your local network, and keep working when the internet is down.</div>
+  </div>
+  <div class="grow"></div>
+  <span class="pill" id="version"></span>
+  <button class="link" id="theme">Theme</button>
+</header>
+<main>
+  <div id="banners"></div>
+  <div class="summary">
+    <div class="card stat">
+      <div class="label">Work without internet</div>
+      <div class="value" id="localCount">–</div>
+      <div class="bar" id="bar"></div>
+    </div>
+    <div class="card stat">
+      <div class="label">eWeLink cloud</div>
+      <div class="value" style="font-size:18px; margin-top:6px" id="cloud">–</div>
+      <div class="label" id="cloudHint" style="margin-top:4px"></div>
+    </div>
+    <div class="card stat">
+      <div class="label">Local control</div>
+      <div class="value" style="font-size:18px; margin-top:6px" id="localOn">–</div>
+      <div class="label" style="margin-top:4px">Setting "Local control" in the plugin config</div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button class="chip on" data-filter="all">All</button>
+    <button class="chip" data-filter="local">Local</button>
+    <button class="chip" data-filter="nokey">No local key</button>
+    <button class="chip" data-filter="cloud">Cloud only</button>
+    <span class="grow"></span>
+    <input class="search" id="search" type="search" placeholder="Search devices">
+  </div>
+  <div class="list" id="list"><div class="empty">Loading…</div></div>
+
+  <div class="legend">
+    <span><span class="pill ok"><span class="dot"></span>Local</span> controlled on your network, works without internet</span>
+    <span><span class="pill wait"><span class="dot"></span>No local key</span> on the network, key missing: restart once with internet</span>
+    <span><span class="pill"><span class="dot"></span>Cloud only</span> no LAN mode seen, needs internet</span>
+  </div>
+</main>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, children = []) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) if (c !== null && c !== undefined) node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return node;
+};
+let dark = matchMedia('(prefers-color-scheme: dark)').matches;
+try { const t = localStorage.getItem('ewelink-page-theme'); if (t) dark = t === 'dark'; } catch {}
+const applyTheme = () => document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+applyTheme();
+$('theme').onclick = () => { dark = !dark; applyTheme(); try { localStorage.setItem('ewelink-page-theme', dark ? 'dark' : 'light'); } catch {} };
+
+const STATUS = {
+  local: { cls: 'ok', text: 'Local' },
+  nokey: { cls: 'wait', text: 'No local key' },
+  cloud: { cls: '', text: 'Cloud only' },
+  off: { cls: '', text: 'Cloud (local control off)' },
+};
+const HINT = {
+  local: 'Commands and updates go directly over your network. Keeps working when the internet is down.',
+  nokey: 'Found on your network, but its local key is missing. Restart Matterbridge once while the internet is up.',
+  cloud: 'Not seen on your network. Zigbee, battery and some newer devices have no LAN mode; for others, turn on "LAN control" in the eWeLink app.',
+  off: 'Local control is switched off in the plugin settings.',
+};
+const ago = (s) => (s === null || s === undefined ? '' : s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`);
+let filter = 'all';
+let data = null;
+document.querySelectorAll('.chip').forEach((chip) => (chip.onclick = () => {
+  filter = chip.dataset.filter;
+  document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === chip));
+  render();
+}));
+$('search').oninput = () => render();
+
+function render() {
+  if (!data) return;
+  const devices = data.devices || [];
+  const counts = { local: 0, nokey: 0, cloud: 0, off: 0 };
+  for (const d of devices) counts[d.status]++;
+  $('version').textContent = 'v' + data.version;
+  $('localCount').innerHTML = '';
+  $('localCount').append(String(counts.local), el('small', { text: ` of ${devices.length}` }));
+  const bar = $('bar');
+  bar.innerHTML = '';
+  if (devices.length) {
+    bar.append(el('span', { style: `width:${(counts.local / devices.length) * 100}%; background: var(--ok)` }));
+    bar.append(el('span', { style: `width:${(counts.nokey / devices.length) * 100}%; background: var(--wait)` }));
+  }
+  const cloud = { connected: ['ok', 'Connected'], polling: ['', 'Reachable (polling)'], unreachable: ['bad', 'Not reachable'] }[data.cloud] || ['', data.cloud];
+  $('cloud').innerHTML = '';
+  $('cloud').append(el('span', { class: 'pill ' + cloud[0] }, [el('span', { class: 'dot' }), cloud[1]]));
+  $('cloudHint').textContent = data.cloud === 'unreachable' ? `No internet or eWeLink is down: ${counts.local} device(s) keep working locally.` : 'Used for devices without local control, and as a backup.';
+  $('localOn').innerHTML = '';
+  $('localOn').append(el('span', { class: 'pill ' + (data.localControl ? 'ok' : '') }, [el('span', { class: 'dot' }), data.localControl ? 'On' : 'Off']));
+
+  const banners = $('banners');
+  banners.innerHTML = '';
+  if (!data.loggedIn) {
+    const b = el('div', { class: 'banner bad' }, ['Not logged in to eWeLink. Open ']);
+    (data.loginUrls || []).forEach((url, i) => { if (i) b.append(' or '); b.append(el('a', { href: url, target: '_blank', rel: 'noopener', text: url })); });
+    b.append(' to log in.');
+    banners.append(b);
+  } else if (counts.nokey) {
+    banners.append(el('div', { class: 'banner wait', text: `${counts.nokey} device(s) are on your network without a local key. Restart Matterbridge once while the internet is up to fetch the keys.` }));
+  }
+
+  const q = $('search').value.trim().toLowerCase();
+  const list = $('list');
+  list.innerHTML = '';
+  const shown = devices
+    .filter((d) => filter === 'all' || d.status === filter || (filter === 'cloud' && d.status === 'off'))
+    .filter((d) => !q || `${d.name} ${d.model} ${d.id}`.toLowerCase().includes(q))
+    .sort((a, b) => ['local', 'nokey', 'cloud', 'off'].indexOf(a.status) - ['local', 'nokey', 'cloud', 'off'].indexOf(b.status) || a.name.localeCompare(b.name));
+  if (!shown.length) list.append(el('div', { class: 'empty', text: devices.length ? 'No devices match.' : 'No devices yet.' }));
+  for (const d of shown) {
+    const s = STATUS[d.status] || STATUS.cloud;
+    const rows = el('dl', { class: 'rows' });
+    const row = (k, v) => { rows.append(el('dt', { text: k })); rows.append(el('dd', {}, v)); };
+    row('Type', d.functions);
+    if (d.host) row('Address', el('code', { text: d.host }));
+    if (d.lastSeen !== null) row('Last seen', ago(d.lastSeen));
+    if (d.lastCommand) row('Last command', `${d.lastCommand.ok ? 'via' : 'failed via'} ${d.lastCommand.via}, ${ago(d.lastCommand.ago)}`);
+    if (!d.reachable) row('State', el('span', { class: 'pill bad', text: 'Offline' }));
+    list.append(el('div', { class: 'card dev ' + d.status }, [
+      el('div', { class: 'top' }, [el('div', { class: 'name', text: d.name }), el('span', { class: 'pill ' + s.cls }, [el('span', { class: 'dot' }), s.text])]),
+      el('div', { class: 'meta', text: `${d.model} · ${d.id}` }),
+      rows,
+      el('div', { class: 'hint', text: HINT[d.status] || '' }),
+    ]));
+  }
+}
+
+async function load() {
+  try {
+    const res = await fetch('api/status');
+    if (!res.ok) throw new Error(res.status === 503 ? 'the plugin is not running' : `HTTP ${res.status}`);
+    data = await res.json();
+    render();
+  } catch (error) {
+    if (!data) $('list').innerHTML = '';
+    if (!data) $('list').append(el('div', { class: 'empty', text: `The plugin did not answer (${error.message}).` }));
+  }
+}
+load();
+setInterval(() => { if (!document.hidden) load(); }, 5000);
+</script>
+</body>
+</html>

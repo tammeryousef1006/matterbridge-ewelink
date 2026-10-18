@@ -150,3 +150,16 @@ test('without internet the plugin starts from the saved device list', async () =
   assert.equal(platform.deviceKeys.get('saved1'), 'k');
   platform.api.listDevices = listDevices;
 });
+
+test('the plugin page lists each device with how it is controlled', async () => {
+  platform.lan.isLocal = (id) => id === 'plug';
+  platform.lan.seen = (id) => (id === 'plug' || id === 'pow' ? { host: '192.168.1.20', port: 8081, lastSeen: Date.now() } : undefined);
+  const status = await platform.onFetch('GET', 'status');
+  const byId = Object.fromEntries(status.devices.map((d) => [d.id, d]));
+  assert.equal(byId.plug.status, 'local');
+  assert.equal(byId.plug.host, '192.168.1.20:8081');
+  assert.equal(byId.pow.status, 'nokey');
+  assert.equal(byId.trv.status, 'cloud');
+  assert.equal(status.localControl, true);
+  assert.equal(await platform.onFetch('GET', 'other'), undefined);
+});

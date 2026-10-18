@@ -106,6 +106,8 @@ interface EWeLinkMatterDevice {
   lastTrigTime?: unknown;
   /** Attribute subscriptions, made once the endpoints are registered. */
   subscriptions: (() => void)[];
+  /** How the last command went (shown on the plugin page). */
+  lastCommand?: { via: string; at: number; ok: boolean };
 }
 
 const DEFAULT_REFRESH_INTERVAL_S = 60;
@@ -249,6 +251,35 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
       this.refreshTimer.unref?.();
     }
     if (this.api.isLoggedIn) this.startLiveUpdates(false);
+  }
+
+  /** The plugin page (globe icon in Matterbridge, apps/frontend/build): which devices work locally. */
+  override async onFetch(method: string, path?: string): Promise<unknown> {
+    if (method !== 'GET' || path !== 'status') return undefined;
+    const now = Date.now();
+    const devices = [...this.devices.entries()].map(([id, matterDevice]) => {
+      const seen = this.lan?.seen(id);
+      const status = !this.lan ? 'off' : this.lan.isLocal(id) ? 'local' : seen ? 'nokey' : 'cloud';
+      return {
+        id,
+        name: matterDevice.name,
+        model: matterDevice.device.productModel || `UIID ${matterDevice.device.uiid}`,
+        functions: matterDevice.functions.map(describe).join(', '),
+        status,
+        reachable: matterDevice.device.online || status === 'local',
+        host: seen ? `${seen.host}:${seen.port}` : '',
+        lastSeen: seen ? Math.round((now - seen.lastSeen) / 1000) : null,
+        lastCommand: matterDevice.lastCommand ? { via: matterDevice.lastCommand.via, ok: matterDevice.lastCommand.ok, ago: Math.round((now - matterDevice.lastCommand.at) / 1000) } : null,
+      };
+    });
+    return {
+      version: this.version,
+      loggedIn: this.api.isLoggedIn,
+      loginUrls: this.loginUrls(),
+      localControl: !!this.lan,
+      cloud: this.socket.isConnected ? 'connected' : this.cloudUnreachable ? 'unreachable' : 'polling',
+      devices,
+    };
   }
 
   override async onShutdown(reason?: string): Promise<void> {
@@ -612,7 +643,9 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
         matterDevice.device.params = mergeParams(matterDevice.device.params, params);
       }
       this.log.info(`${label}: ${action} done (${via}).`);
+      matterDevice.lastCommand = { via, at: Date.now(), ok: true };
     } catch (error) {
+      matterDevice.lastCommand = { via, at: Date.now(), ok: false };
       this.log.error(`${label}: ${action} failed: ${errorMessage(error)}`);
       throw error;
     }

@@ -6,6 +6,7 @@
 - The device list and local keys are saved, so the plugin starts and controls devices locally without internet
 - The log lists which devices work without internet and why others don't; every command says whether it went over the local network or the cloud
 - A cloud that can't be reached is logged once instead of at every refresh
+- Plugin page (globe icon in Matterbridge): every device with a Local / No local key / Cloud only badge, its address, when it was last seen and how the last command went, plus the cloud status
 
 ## 1.1.1 (2026-10-10)
 - README: SmartThings users should reinstall the plugin after updating so devices are re-added with their new type

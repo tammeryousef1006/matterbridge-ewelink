@@ -209,7 +209,7 @@ The login is stored in `~/Matterbridge/matterbridge-ewelink/tokens.json`. Delete
 Most Sonoff Wi-Fi devices (MINI, BASIC, S26/S40 plugs, POW, TH, dimmers, wall switches and more) support eWeLink **LAN mode**: they announce themselves on your network and take commands directly. The plugin uses this first and the cloud only as a backup.
 
 - **Internet is needed once**: each device's local key comes from your eWeLink account. After that, devices with local control keep working when the internet is down, even after a Matterbridge restart.
-- **Which devices work offline?** About 30 seconds after Matterbridge starts, the log lists them:
+- **Which devices work offline?** Click the 🌐 icon of the plugin in Matterbridge: every device shows a green **Local**, orange **No local key** or grey **Cloud only** badge, and the page shows whether the eWeLink cloud is reachable. The log also lists them about 30 seconds after Matterbridge starts:
   - `Local control: 5 of 8 device(s) work without internet: ...`
   - `On the network but without a local key ...`: restart once while the internet is up.
   - `Cloud only ...`: Zigbee devices, battery Wi-Fi sensors, cameras and some newer models have no LAN mode. Some newer models have a **LAN control** switch in the eWeLink app (device settings) that must be on.
