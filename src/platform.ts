@@ -465,7 +465,7 @@ export class EWeLinkPlatform extends MatterbridgeDynamicPlatform {
       for (const fn of functions) {
         const endpoint = single
           ? root
-          : root.addChildDeviceType(fn.id, this.deviceTypes(device, fn) as [DeviceTypeDefinition, ...DeviceTypeDefinition[]], {}, this.config.debug === true);
+          : root.addChildDeviceType(fn.id, this.deviceTypes(device, fn) as [DeviceTypeDefinition, ...DeviceTypeDefinition[]], childOptions(fn), this.config.debug === true);
         this.addFunction(matterDevice, endpoint, fn, state);
       }
       matterDevice.roots.push(root);
@@ -971,6 +971,15 @@ function describe(fn: DeviceFunction): string {
   if (fn.kind === 'light') return `${fn.id} (${fn.profile.color ? 'colour' : fn.profile.colorTemp ? 'white tunable' : 'dimmable'} light)`;
   if (fn.kind === 'onOff' && fn.energy) return `${fn.id} (with power monitoring)`;
   return fn.id;
+}
+
+/**
+ * Several switches of the same kind in one device need a label each (Descriptor TagList, Common Number
+ * namespace 0x07): "Switch 1", "Switch 2"...
+ */
+function childOptions(fn: DeviceFunction): { tagList?: { mfgCode: null; namespaceId: number; tag: number; label: string }[] } {
+  if (fn.kind !== 'onOff' || fn.channel === undefined) return {};
+  return { tagList: [{ mfgCode: null, namespaceId: 0x07, tag: fn.channel + 1, label: `Switch ${fn.channel + 1}` }] };
 }
 
 /** Brightness 1-100 to a Matter level 1-254 and back. */

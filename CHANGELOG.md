@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.0-beta.2 (2026-10-24)
+- Multi-channel switches (DUALR3, TX Ultimate, 2/3/4-gang): each channel is labeled "Switch 1", "Switch 2"... as Matter requires, which removes the "missing Base Descriptor.TAGLIST" warnings at startup
+
 ## 1.2.0-beta.1 (2026-10-17)
 - Local control: Sonoff devices with eWeLink LAN mode are found on the network (mDNS) and controlled directly (encrypted with each device's key), so they respond faster and keep working when the internet is down. The cloud stays as a backup and for devices without LAN mode (`localControl` option, on by default)
 - Local state: devices' own announcements update Matter right away, also without internet

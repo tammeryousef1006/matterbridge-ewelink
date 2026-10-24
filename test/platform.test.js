@@ -163,3 +163,9 @@ test('the plugin page lists each device with how it is controlled', async () => 
   assert.equal(status.localControl, true);
   assert.equal(await platform.onFetch('GET', 'other'), undefined);
 });
+
+test('switches of one device are labeled Switch 1, Switch 2 (Matter tag list)', () => {
+  const children = endpoints['ewelink-dualr3'].getChildEndpoints();
+  assert.deepEqual(children.map((c) => c.tagList?.[0]?.label), ['Switch 1', 'Switch 2']);
+  assert.deepEqual(children.map((c) => c.tagList?.[0]?.namespaceId), [7, 7]);
+});
