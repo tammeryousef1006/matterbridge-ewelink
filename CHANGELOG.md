@@ -1,15 +1,13 @@
 # Changelog
 
-## 1.2.0-beta.2 (2026-10-24)
-- Multi-channel switches (DUALR3, TX Ultimate, 2/3/4-gang): each channel is labeled "Switch 1", "Switch 2"... as Matter requires, which removes the "missing Base Descriptor.TAGLIST" warnings at startup
-
-## 1.2.0-beta.1 (2026-10-17)
+## 1.2.0 (2026-10-24)
 - Local control: Sonoff devices with eWeLink LAN mode are found on the network (mDNS) and controlled directly (encrypted with each device's key), so they respond faster and keep working when the internet is down. The cloud stays as a backup and for devices without LAN mode (`localControl` option, on by default)
 - Local state: devices' own announcements update Matter right away, also without internet
 - The device list and local keys are saved, so the plugin starts and controls devices locally without internet
 - The log lists which devices work without internet and why others don't; every command says whether it went over the local network or the cloud
 - A cloud that can't be reached is logged once instead of at every refresh
 - Plugin page (globe icon in Matterbridge): every device with a Local / No local key / Cloud only badge, its address, when it was last seen and how the last command went, plus the cloud status
+- Multi-channel switches (DUALR3, TX Ultimate, 2/3/4-gang): each channel is labeled "Switch 1", "Switch 2"... as Matter requires, which removes the "missing Base Descriptor.TAGLIST" warnings at startup
 
 ## 1.1.1 (2026-10-10)
 - README: SmartThings users should reinstall the plugin after updating so devices are re-added with their new type
